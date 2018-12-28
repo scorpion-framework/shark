@@ -7,6 +7,9 @@ import std.system : Endian;
 
 import xbuffer : Buffer;
 
+// debug
+import std.stdio;
+
 class Stream(Endian endianness, size_t length, Endian sequenceEndianness=Endian.littleEndian, S=Object) {
 
 	private enum usesSequence = !is(S == Object);
@@ -47,7 +50,7 @@ class Stream(Endian endianness, size_t length, Endian sequenceEndianness=Endian.
 	private void receiveImpl() {
 		immutable recv = _socket.receive(_recv);
 		if(recv == Socket.ERROR) throw new SocketException(lastSocketError);
-		else if(recv == 0) throw new SocketException("Connection closed");
+		else if(recv == 0) throw new SocketException("Connection timed out");
 		_buffer.writeData(_recv[0..recv]);
 	}
 	
@@ -64,7 +67,9 @@ class Stream(Endian endianness, size_t length, Endian sequenceEndianness=Endian.
 	private Buffer readSequence() {
 		static if(usesSequence) {
 			if(_buffer.canRead(S.sizeof)) {
-				_buffer.read!(sequenceEndianness, S)();
+				sequence = _buffer.read!(sequenceEndianness, S)();
+				sequence++;
+				writeln(sequence);
 				return readBody();
 			} else {
 				receiveImpl();
@@ -113,4 +118,23 @@ string read0String(Buffer buffer) {
 void write0String(Buffer buffer, string str) {
 	buffer.writeData(cast(void[])str);
 	buffer.write(ubyte(0));
+}
+
+string toSnakeCase(string input) {
+	Appender!string output;
+	foreach(c ; input) {
+		if(c >= 'A' && c <= 'Z') {
+			output.put('_');
+			output.put(cast(char)(c + 32));
+		} else {
+			output.put(c);
+		}
+	}
+	return output.data;
+}
+
+unittest {
+
+	assert("testTest".toSnakeCase() == "test_test");
+
 }

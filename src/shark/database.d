@@ -5,6 +5,7 @@ import std.string : join;
 import std.traits : hasUDA, getUDAs;
 
 import shark.entity;
+import shark.util : toSnakeCase;
 
 // debug
 import std.stdio : writeln;
@@ -27,7 +28,7 @@ class Database {
 		this.connectImpl(db, user, password);
 	}
 
-	//public abstract string query(string query);
+	public abstract void[] query(string query);
 	
 	/**
 	 * Initializes an entity, either by creating it or updating
@@ -35,6 +36,10 @@ class Database {
 	 * Example:
 	 * ---
 	 * class Test : Entity {
+	 * 
+	 *    override string tableName() {
+	 *        return "test";
+	 *    }
 	 *
 	 *    @Id
 	 *    @AutoIncrement
@@ -50,7 +55,6 @@ class Database {
 	 * ---
 	 */
 	public void init(T:Entity)() if(isValidEntity!T) {
-		//TODO call `describe ${new Entity().tableName}`
 		string[] fields;
 		static foreach(immutable member ; getEntityMembers!T) {
 			{
@@ -67,7 +71,7 @@ class Database {
 				fields ~=  attr.join(" ");
 			}
 		}
-		writeln("create table " ~ new T().tableName ~ " (" ~ fields.join(",") ~ ");");
+		query("create table " ~ new T().tableName ~ " (" ~ fields.join(",") ~ ");").writeln;
 	}
 	
 	public T select(T:Entity)(T entity) {
@@ -105,7 +109,7 @@ class Database {
 				values ~= escape(mixin("entity." ~ member));
 			}
 		}
-		writeln("insert into " ~ entity.tableName ~ " (" ~ names.join(", ") ~ ") values (" ~ values.join(", ") ~ ");");
+		query("insert into " ~ entity.tableName ~ " (" ~ names.join(", ") ~ ") values (" ~ values.join(", ") ~ ");");
 	}
 	
 	public void update(string[] fields, string[] where, T:Entity)(T entity) {
@@ -134,7 +138,7 @@ private string memberName(T:Entity, string member)() {
 	static if(hasUDA!(__traits(getMember, T, member), Name)) {
 		return getUDAs!(__traits(getMember, T, member), Name)[0].name;
 	} else {
-		return member/*.snakeCase*/;
+		return member.toSnakeCase();
 	}
 }
 
