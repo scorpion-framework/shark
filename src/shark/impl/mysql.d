@@ -1,19 +1,21 @@
 module shark.impl.mysql;
 
-import std.algorithm : max;
+import std.algorithm : max, canFind;
+import std.conv : to;
 import std.exception : enforce;
-import std.digest.sha : sha256Of;
+import std.digest.sha : sha1Of, sha256Of;
 import std.socket;
+import std.string : join;
+import std.system : Endian;
 
-import shark.database;
+import shark.database : DatabaseConnectionException, ErrorCodeDatabaseException;
+import shark.sql : SqlDatabase;
 import shark.util : Stream, read0String, write0String;
 
-import xbuffer;
+import xbuffer : Buffer;
 
 // debug
 import std.stdio;
-
-private enum bufferSize = 512;
 
 enum CharacterSet : ubyte {
 
@@ -53,9 +55,9 @@ private enum CapabilityFlags : uint {
 
 }
 
-private alias MysqlStream = Stream!(Endian.littleEndian, 3, Endian.littleEndian, ubyte);
+private alias MysqlStream = Stream!(0, Endian.littleEndian, 3, false, Endian.littleEndian, ubyte);
 
-class MysqlDatabase : Database {
+class MysqlDatabase : SqlDatabase {
 
 	private immutable ubyte characterSet;
 
@@ -64,12 +66,12 @@ class MysqlDatabase : Database {
 
 	private string _serverVersion;
 
-	public this(string host, ushort port, ubyte characterSet=CharacterSet.utf8) {
+	public this(string host, ushort port=3306, ubyte characterSet=CharacterSet.utf8) {
 		this.characterSet = characterSet;
 		Socket socket = new TcpSocket();
 		socket.blocking = true;
 		socket.connect(getAddress(host, port)[0]);
-		_stream = new MysqlStream(socket, bufferSize);
+		_stream = new MysqlStream(socket, 1024);
 	}
 
 	/**
@@ -97,30 +99,40 @@ class MysqlDatabase : Database {
 			authPluginData ~= buffer.read!(ubyte[])(max(13, authPluginDataLength - 8));
 			authPluginData = authPluginData[0..$-1]; // remove final 0
 		}
+		string method;
 		if(capabilities & CapabilityFlags.pluginAuth) {
-			enforce!DatabaseConnectionException(buffer.read0String() == "caching_sha2_password", "Unknown hashing method");
+			method = buffer.read0String();
+			enforce!DatabaseConnectionException(["mysql_native_password", "caching_sha2_password"].canFind(method), "Unknown hashing method '" ~ method ~ "'");
 		}
 		enforce!DatabaseConnectionException(capabilities & CapabilityFlags.protocol41, "Server does not support protocol v4.1");
 		buffer.reset();
-		buffer.write!(Endian.littleEndian, uint)(CapabilityFlags.protocol41 | CapabilityFlags.connectWithDb | CapabilityFlags.pluginAuth | CapabilityFlags.secureConnection);
+		buffer.write!(Endian.littleEndian, uint)(CapabilityFlags.protocol41 | CapabilityFlags.connectWithDb | CapabilityFlags.secureConnection | CapabilityFlags.pluginAuth);
 		buffer.write!(Endian.littleEndian, uint)(1);
 		buffer.write(characterSet);
 		buffer.writeData(new void[23]); // reserved
 		buffer.write0String(user);
 		if(password.length) {
-			immutable hash = hashPassword(cast(ubyte[])password, authPluginData);
+			immutable hash = method == "mysql_native_password" ? hashPassword1(password, authPluginData) : hashPassword2(password, authPluginData);
 			buffer.write(hash.length & ubyte.max);
 			buffer.write(hash);
 		} else {
 			buffer.write(ubyte(0));
 		}
 		buffer.write0String(db);
-		buffer.write0String("caching_sha2_password");
+		buffer.write0String(method);
 		_stream.send(buffer);
-		//receive(); // throws exception on failure
 	}
-
-	private string hashPassword(const(ubyte)[] password, const(ubyte)[] nonce) {
+	
+	private string hashPassword1(string password, const(ubyte)[] nonce) {
+		auto password1 = sha1Of(password);
+		auto res = sha1Of(sha1Of(password1), nonce).dup;
+		foreach(i, ref r; res) {
+			r = r ^ password1[i];
+		}
+		return cast(string)res;
+	}
+	
+	private string hashPassword2(string password, const(ubyte)[] nonce) {
 		auto password1 = sha256Of(password);
 		auto res = sha256Of(sha256Of(password1), nonce).dup;
 		foreach(i, ref r; res) {
@@ -140,59 +152,38 @@ class MysqlDatabase : Database {
 		return buffer;
 	}
 
-	public override void[] query(string query) {
+	public override Buffer query(string query) {
+		debug writeln("Running MySQL query: ", query);
 		Buffer buffer = new Buffer(query.length + 1);
 		buffer.write(ubyte(3));
 		buffer.write(query);
 		_stream.resetSequence();
 		_stream.send(buffer);
-		return receive().data;
+		return receive();
+	}
+
+	protected override TableInfo[string] getTableInfo(string table) {
+		query("describe " ~ table ~ ";");
+		return null;
+	}
+
+	protected override string generateField(InitInfo.Field field) {
+		string[] ret = [field.name];
+		ret ~= convertType(field.type) ~ (field.length ? "(" ~ field.length.to!string ~ ")" : "");
+		if(field.autoIncrement) ret ~= "auto_increment";
+		if(!field.nullable) ret ~= "not null";
+		if(field.unique) ret ~= "unique";
+		return ret.join(" ");
+	}
+
+	private string convertType(Type type) {
+		return "???"; //TODO
+	}
+	
+	protected override void alterTableColumn(string table, InitInfo.Field field, bool typeChanged, bool nullableChanged) {
+		query("alter table " ~ table ~ " modify column " ~ generateField(field) ~ ";");
 	}
 
 }
 
-class MysqlDatabaseException : ErrorCodeDatabaseException!("MySQL", ushort) {
-
-	public this(ushort errorCode, string msg, string file=__FILE__, size_t line=__LINE__) {
-		super(errorCode, msg, file, line);
-	}
-
-}
-
-unittest {
-
-	import shark.entity;
-
-	Database database = new MysqlDatabase("localhost", 3306);
-	database.connect("test", "root", "root");
-
-	writeln("SELECT * FROM a:");
-	auto result = database.query("select * from a;");
-	writeln("Result: ", result);
-	writeln(cast(string)result);
-
-	static class Test : Entity {
-
-		override @property string tableName() {
-			return "test";
-		}
-
-		@Id
-		@AutoIncrement
-		Integer testId;
-
-		Integer integer;
-
-		@Length(50)
-		String str;
-
-	}
-
-	database.init!Test();
-
-	Test test = new Test();
-	test.integer = 44;
-	test.str = "string";
-	database.insert(test);
-
-}
+alias MysqlDatabaseException = ErrorCodeDatabaseException!("MySQL", ushort);

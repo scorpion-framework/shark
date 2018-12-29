@@ -38,6 +38,10 @@ alias Integer = Nullable!int;
 
 alias Long = Nullable!long;
 
+alias Float = Nullable!float;
+
+alias Double = Nullable!double;
+
 alias String = Nullable!string;
 
 alias Binary = Nullable!(ubyte[]);

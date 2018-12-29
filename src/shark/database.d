@@ -23,12 +23,10 @@ class Database {
 	
 	protected abstract void connectImpl(string db, string user, string password);
 	
-	public void connect(string db, string user="root", string password="") {
+	public void connect(string db, string user, string password="") {
 		_db = db;
 		this.connectImpl(db, user, password);
 	}
-
-	public abstract void[] query(string query);
 	
 	/**
 	 * Initializes an entity, either by creating it or updating
@@ -52,26 +50,103 @@ class Database {
 	 *    String b;
 	 *
 	 * }
+	 * 
+	 * database.init!Test();
 	 * ---
 	 */
 	public void init(T:Entity)() if(isValidEntity!T) {
-		string[] fields;
+		enum initInfo = generateInitInfo!T(); // generate at compile time
+		initImpl(initInfo);
+	}
+
+	private static InitInfo generateInitInfo(T:Entity)() {
+		InitInfo ret;
+		ret.tableName = new T().tableName;
 		static foreach(immutable member ; getEntityMembers!T) {
 			{
-				string[] attr = [memberName!(T, member), typeName!(typeof(__traits(getMember, T, member)))];
+				InitInfo.Field field;
+				field.name = memberName!(T, member);
+				field.type = memberType!(typeof(__traits(getMember, T, member)));
+				field.nullable = memberNullable!(typeof(__traits(getMember, T, member)));
 				foreach(uda ; __traits(getAttributes, __traits(getMember, T, member))) {
-					static if(is(typeof(uda) == Length)) attr[1] ~= "(" ~ uda.length.to!string ~ ")";
+					static if(is(uda == Id)) ret.primaryKey = field.name;
+					else static if(is(uda == AutoIncrement)) {
+						field.autoIncrement = true;
+						field.nullable = false;
+					}
+					else static if(is(uda == NotNull)) field.nullable = false;
+					else static if(is(uda == Unique)) field.unique = true;
+					else static if(is(typeof(uda) == Length)) field.length = uda.length;
 				}
-				foreach(uda ; __traits(getAttributes, __traits(getMember, T, member))) {
-					static if(is(uda == Id)) attr ~= "primary key";
-					else static if(is(uda == AutoIncrement)) attr ~= "auto_increment";
-					else static if(is(uda == NotNull)) attr ~= "not null";
-					else static if(is(uda == Unique)) attr ~= "unique";
-				}
-				fields ~=  attr.join(" ");
+				ret.fields ~= field;
 			}
 		}
-		query("create table " ~ new T().tableName ~ " (" ~ fields.join(",") ~ ");").writeln;
+		return ret;
+	}
+
+	protected abstract void initImpl(InitInfo);
+
+	protected static struct InitInfo {
+
+		/**
+		 * Name of the table from the entity's tableName property.
+		 */
+		string tableName;
+
+		/**
+		 * Fields of the table from the entity's variables.
+		 */
+		Field[] fields;
+
+		/**
+		 * If not null indicates which field is the primary key.
+		 */
+		string primaryKey;
+
+		static struct Field {
+
+			/**
+			 * Name of the field, either from @Name or converted from
+			 * the variable's name.
+			 */
+			string name;
+
+			/**
+			 * Type of the field, from the variable's type.
+			 */
+			Type type;
+
+			/**
+			 * Optional length of the field from the @Length attribute.
+			 * Indicates the length when higher than 0.
+			 */
+			size_t length = 0;
+
+			/**
+			 * Indicates whether the type can be null, either from the
+			 * type of the variable or the @NotNull attribute.
+			 */
+			bool nullable = true;
+
+			/**
+			 * Indicates whether the type is unique in the table's rows,
+			 * from the @Unique attribute.
+			 */
+			bool unique = false;
+
+			/**
+			 * Indicates whether the type should be incremented each type
+			 * a new row is inserted.
+			 */
+			bool autoIncrement = false;
+
+			/**
+			 * Indicates the defaultValue from the @Default attribute.
+			 */
+			string defaultValue;
+
+		}
+
 	}
 	
 	public T select(T:Entity)(T entity) {
@@ -101,27 +176,11 @@ class Database {
 	 * ---
 	 */
 	public void insert(T:Entity)(T entity) {
-		string[] names;
-		string[] values;
-		static foreach(immutable member ; getEntityMembers!T()) {
-			if(!mixin("entity." ~ member).isNull) {
-				names ~= memberName!(T, member);
-				values ~= escape(mixin("entity." ~ member));
-			}
-		}
-		query("insert into " ~ entity.tableName ~ " (" ~ names.join(", ") ~ ") values (" ~ values.join(", ") ~ ");");
+
 	}
 	
 	public void update(string[] fields, string[] where, T:Entity)(T entity) {
-		string[] queries;
-		static foreach(immutable field ; fields) {
-			queries ~= memberName!(T, field) ~ "=" ~ escape(mixin("entity." ~ field));
-		}
-		string[] wheres;
-		static foreach(immutable w ; where) {
-			wheres ~= memberName!(T, w) ~ "=" ~ escape(mixin("entity." ~ w));
-		}
-		writeln("update " ~ entity.tableName ~ " set " ~ queries.join(", ") ~ " where " ~ wheres.join(" and ") ~ ";");
+
 	}
 	
 	public void update(string[] fields, T:Entity)(T entity) {
@@ -130,6 +189,24 @@ class Database {
 	
 	public void update(T:Entity)(T entity) {
 		return update!(getEntityMembers!T, T)(entity);
+	}
+
+	public abstract void dropIfExists(string table);
+
+	public abstract void drop(string table);
+
+	protected enum Type {
+
+		BOOL,
+		BYTE,
+		SHORT,
+		INT,
+		LONG,
+		FLOAT,
+		DOUBLE,
+		STRING,
+		BINARY
+
 	}
 
 }
@@ -149,26 +226,40 @@ private string escape(T)(T value) {
 	} else static if(is(T : Nullable!R, R)) {
 		if(value.isNull) return "null";
 		else return value.value.to!string;
-	} else static if(is(T : Bool) || is(T == bool) || is(T : Byte) || is(T == byte) || is(T == ubyte) || is(T : Short) || is(T == short) || is(T == ushort) || is(T : Integer) || is(T == int) || is(T == uint) || is(T : Long) || is(T == long) || is(T == ulong)) {
+	} else {
 		return value.to!string;
 	}
 }
 
-private string typeName(T)() {
-	static if(is(T : String) || is(T : string)) {
-		return "varchar";
-	} else static if(is(T : Binary) || is(T : ubyte[])) {
-		return "binary";
-	} else static if(is(T : Bool) || is(T == bool)) {
-		return "boolean";
-	} else static if(is(T : Byte) || is(T == byte) || is(T == ubyte)) {
-		return "tinyint";
-	} else static if(is(T : Short) || is(T == short) || is(T == ushort)) {
-		return"shortint";
-	} else static if(is(T : Integer) || is(T == int) || is(T == uint)) {
-		return "integer";
-	} else static if(is(T : Long) || is(T == long) || is(T == ulong)) {
-		return "bigint";
+private Database.Type memberType(T)() {
+	with(Database.Type) {
+		static if(is(T : Bool) || is(T == bool)) {
+			return BOOL;
+		} else static if(is(T : Byte) || is(T == byte) || is(T == ubyte)) {
+			return BYTE;
+		} else static if(is(T : Short) || is(T == short) || is(T == ushort)) {
+			return SHORT;
+		} else static if(is(T : Integer) || is(T == int) || is(T == uint)) {
+			return INT;
+		} else static if(is(T : Long) || is(T == long) || is(T == ulong)) {
+			return LONG;
+		} else static if(is(T : Float) || is(T == float)) {
+			return FLOAT;
+		} else static if(is(T : Double) || is(T == double)) {
+			return DOUBLE;
+		} else static if(is(T : String) || is(T : string)) {
+			return STRING;
+		} else static if(is(T : Binary) || is(T : ubyte[])) {
+			return BINARY;
+		}
+	}
+}
+
+private bool memberNullable(T)() {
+	static if(is(T == bool) || is(T == byte) || is(T == ubyte) || is(T == short) || is(T == ushort) || is(T == int) || is(T == uint) || is(T == long) || is(T == ulong) || is(T == float) || is(T == double)) {
+		return false;
+	} else {
+		return true;
 	}
 }
 
@@ -189,7 +280,7 @@ private bool isValidEntity(T:Entity)() {
 			static if(is(uda == Id)) idCount++;
 		}
 	}
-	return idCount == 1;
+	return idCount <= 1;
 }
 
 private string getEntityId(T:Entity)() {
@@ -221,6 +312,28 @@ class ErrorCodeDatabaseException(string dbname, T) : DatabaseException {
 	public this(T errorCode, string msg, string file=__FILE__, size_t line=__LINE__) {
 		super("(" ~ dbname ~ "-" ~ errorCode.to!string ~ ") " ~ msg, file, line);
 		_errorCode = errorCode;
+	}
+
+	public @property T errorCode() {
+		return _errorCode;
+	}
+
+}
+
+class ErrorCodesDatabaseException(T) : DatabaseException {
+
+	private T[] _errors;
+
+	public this(T[] errors, string file=__FILE__, size_t line=__LINE__) {
+		string[] messages;
+		foreach(error ; errors) {
+			messages ~= error.msg;
+		}
+		super(messages.join(", "), file, line);
+	}
+
+	public @property T[] errors() {
+		return _errors;
 	}
 
 }

@@ -3,14 +3,14 @@ module shark.util;
 import std.array : Appender;
 import std.conv : to;
 import std.socket : Socket, SocketException, lastSocketError;
-import std.system : Endian;
+import std.system : Endian, endian;
 
 import xbuffer : Buffer;
 
 // debug
 import std.stdio;
 
-class Stream(Endian endianness, size_t length, Endian sequenceEndianness=Endian.littleEndian, S=Object) {
+class Stream(size_t idLength, Endian endianness, size_t length, bool lengthIncludesItself, Endian sequenceEndianness=Endian.littleEndian, S=Object) {
 
 	private enum usesSequence = !is(S == Object);
 
@@ -20,15 +20,17 @@ class Stream(Endian endianness, size_t length, Endian sequenceEndianness=Endian.
 	private Buffer _buffer;
 	private union {
 		version(LittleEndian) struct {
-			void[length] _lengthData;
-			void[size_t.sizeof-length] filler;
+			ubyte[length] _lengthData;
+			ubyte[size_t.sizeof-length] filler;
 		}
 		version(BigEndian) struct {
-			void[size_t.sizeof-length] filler;
-			void[length] _lengthData;
+			ubyte[size_t.sizeof-length] filler;
+			ubyte[length] _lengthData;
 		}
 		size_t _length;
 	}
+
+	static if(idLength) private void[idLength] _id;
 	
 	static if(usesSequence) private S sequence;
 	
@@ -36,6 +38,20 @@ class Stream(Endian endianness, size_t length, Endian sequenceEndianness=Endian.
 		_socket = socket;
 		_recv = new void[buffer];
 		_buffer = new Buffer(buffer);
+		_length = 0;
+	}
+
+	public @property Socket socket() {
+		return _socket;
+	}
+
+	static if(idLength) public @property T[idLength] id(T=void)() {
+		return cast(T[idLength])_id;
+	}
+
+	static if(idLength) public @property T[idLength] id(T)(T[idLength] id) {
+		_id = cast(void[])id;
+		return id;
 	}
 	
 	static if(usesSequence) public void resetSequence() {
@@ -55,8 +71,13 @@ class Stream(Endian endianness, size_t length, Endian sequenceEndianness=Endian.
 	}
 	
 	private Buffer readLength() {
-		if(_buffer.canRead(length)) {
-			_lengthData = _buffer.readData(length);
+		static if(idLength) immutable requiredLength = idLength + length;
+		else immutable requiredLength = length;
+		if(_buffer.canRead(requiredLength)) {
+			static if(idLength) _id = _buffer.readData(idLength);
+			_lengthData = _buffer.read!(ubyte[])(length);
+			static if(endianness != endian) reverse(_lengthData);
+			static if(lengthIncludesItself) _length -= length;
 			return readSequence();
 		} else {
 			receiveImpl();
@@ -67,9 +88,10 @@ class Stream(Endian endianness, size_t length, Endian sequenceEndianness=Endian.
 	private Buffer readSequence() {
 		static if(usesSequence) {
 			if(_buffer.canRead(S.sizeof)) {
-				sequence = _buffer.read!(sequenceEndianness, S)();
-				sequence++;
-				writeln(sequence);
+				static if(usesSequence) {
+					_buffer.read!(sequenceEndianness, S)();
+					sequence++;
+				}
 				return readBody();
 			} else {
 				receiveImpl();
@@ -93,17 +115,28 @@ class Stream(Endian endianness, size_t length, Endian sequenceEndianness=Endian.
 	
 	public void send(Buffer buffer) {
 		writeLength(buffer);
-		buffer.write!(sequenceEndianness, S)(sequence++, length);
+		static if(usesSequence) buffer.write!(sequenceEndianness, S)(sequence++, length);
+		static if(idLength) buffer.write(_id, 0);
 		_socket.send(buffer.data);
 	}
 	
 	protected void writeLength(Buffer buffer) {
 		immutable rlength = _length;
 		_length = buffer.data.length;
+		static if(lengthIncludesItself) _length += length;
+		static if(endianness != endian) reverse(_lengthData);
 		buffer.write(_lengthData, 0);
 		_length = rlength;
 	}
 
+}
+
+private void reverse(T)(ref T array) {
+	T ret;
+	foreach(i ; 0..array.length) {
+		ret[$-1-i] = array[i];
+	}
+	array = ret;
 }
 
 string read0String(Buffer buffer) {
