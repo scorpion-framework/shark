@@ -1,4 +1,4 @@
 name "shark"
-description "Native MySQL implementation"
+description "Native connector for various databases"
 license "MIT"
 dependency "xbuffer" version="~>1.0.0"

@@ -4,6 +4,7 @@ import std.conv : to;
 import std.digest : toHexString, LetterCase;
 import std.digest.md : md5Of;
 import std.exception : enforce;
+import std.experimental.logger : trace;
 import std.socket;
 import std.string : join;
 import std.system : Endian;
@@ -118,7 +119,7 @@ class PostgresqlDatabase : SqlDatabase {
 	}
 
 	public override Buffer query(string query) {
-		debug writeln("Running PostgreSQL query: ", query);
+		trace("Running query `" ~ query ~ "`");
 		_stream.id = "Q";
 		Buffer buffer = new Buffer(query.length + 6);
 		buffer.write0String(query);
@@ -155,46 +156,58 @@ class PostgresqlDatabase : SqlDatabase {
 		return ret;
 	}
 
-	private Type fromStringToType(string str) {
+	private uint fromStringToType(string str) {
 		switch(str) with(Type) {
 			case "boolean": return BOOL;
-			case "char": return BYTE;
-			case "smaillint": return SHORT;
+			case "smaillint": return BYTE | SHORT;
 			case "integer": return INT;
 			case "bigint": return LONG;
 			case "real": return FLOAT;
+			case "character": return CHAR;
 			case "double precision": return DOUBLE;
 			case "character varying": return STRING;
-			case "bytea": return BINARY;
+			case "bytea": return BINARY | BLOB;
+			case "text": return CLOB;
 			default: throw new DatabaseException("Unknown type '" ~ str ~ "'");
 		}
 	}
 
 	protected override string generateField(InitInfo.Field field) {
 		string[] ret = [field.name];
-		ret ~= fromTypeToString(field.type, field.autoIncrement) ~ (field.length ? "(" ~ field.length.to!string ~ ")" : "");
+		ret ~= fromTypeToString(cast(Type)field.type, field.autoIncrement, field.length);
+		if(field.length) ret[1] ~= "(" ~ field.length.to!string ~ ")";
 		if(!field.nullable) ret ~= "not null";
 		if(field.unique) ret ~= "unique";
 		return ret.join(" ");
 	}
 	
-	private string fromTypeToString(Type type, bool autoIncrement) {
+	private string fromTypeToString(Type type, bool autoIncrement, ref size_t length) {
 		final switch(type) with(Type) {
 			case BOOL: return "boolean";
-			case BYTE: return "char(1)";
+			case BYTE: return "int2";
 			case SHORT: return autoIncrement ? "serial2" : "int2";
 			case INT: return autoIncrement ? "serial4" : "int4";
 			case LONG: return autoIncrement ? "serial8" : "int8";
 			case FLOAT: return "float4";
 			case DOUBLE: return "float8";
+			case CHAR:
+				length = 1;
+				return "char";
 			case STRING: return "varchar";
-			case BINARY: return "bytea";
+			case BINARY:
+			case BLOB:
+				length = 0; // bytea(x) not supported
+				return "bytea";
+			case CLOB: return "text";
 		}
 	}
 
 	protected override void alterTableColumn(string table, InitInfo.Field field, bool typeChanged, bool nullableChanged) {
 		string q = "alter table " ~ table ~ " alter column " ~ field.name;
-		if(typeChanged) q ~= " type " ~ fromTypeToString(field.type, false) ~ (field.length ? "(" ~ field.length.to!string ~ ")" : "");
+		if(typeChanged) {
+			q ~= " type " ~ fromTypeToString(cast(Type)field.type, false, field.length);
+			if(field.length) q ~= "(" ~ field.length.to!string ~ ")";
+		}
 		if(nullableChanged) {
 			if(field.nullable) q ~= " drop not null";
 			else q ~= " set not null";
@@ -205,6 +218,11 @@ class PostgresqlDatabase : SqlDatabase {
 	private void enforcePacketSequence(char expected) {
 		immutable current = _stream.id!char[0];
 		if(current != expected) throw new WrongPacketSequenceException(expected, current);
+	}
+
+	protected override string escapeBinary(ubyte[] value) {
+		//return "E'\\x" ~ toHexString(value) ~ "'";
+		return "decode('" ~ toHexString(value) ~ "', 'hex')";
 	}
 
 }

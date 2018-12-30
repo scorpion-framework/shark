@@ -27,6 +27,10 @@ class Database {
 		_db = db;
 		this.connectImpl(db, user, password);
 	}
+
+	public void connect(string password="") {
+		this.connect(null, "", password);
+	}
 	
 	/**
 	 * Initializes an entity, either by creating it or updating
@@ -54,7 +58,7 @@ class Database {
 	 * database.init!Test();
 	 * ---
 	 */
-	public void init(T:Entity)() if(isValidEntity!T) {
+	public void init(T:Entity)() {
 		enum initInfo = generateInitInfo!T(); // generate at compile time
 		initImpl(initInfo);
 	}
@@ -69,7 +73,7 @@ class Database {
 				field.type = memberType!(typeof(__traits(getMember, T, member)));
 				field.nullable = memberNullable!(typeof(__traits(getMember, T, member)));
 				foreach(uda ; __traits(getAttributes, __traits(getMember, T, member))) {
-					static if(is(uda == Id)) ret.primaryKey = field.name;
+					static if(is(uda == Id)) ret.primaryKeys ~= field.name;
 					else static if(is(uda == AutoIncrement)) {
 						field.autoIncrement = true;
 						field.nullable = false;
@@ -101,7 +105,7 @@ class Database {
 		/**
 		 * If not null indicates which field is the primary key.
 		 */
-		string primaryKey;
+		string[] primaryKeys;
 
 		static struct Field {
 
@@ -114,7 +118,7 @@ class Database {
 			/**
 			 * Type of the field, from the variable's type.
 			 */
-			Type type;
+			uint type;
 
 			/**
 			 * Optional length of the field from the @Length attribute.
@@ -148,34 +152,111 @@ class Database {
 		}
 
 	}
-	
-	public T select(T:Entity)(T entity) {
+
+	public static struct Select {
+
+		Where where;
 		
-		return null;
+		Order order;
+
+		size_t limit = 0;
+
+		static struct Where {
+
+
+
+		}
+
+		static class Order {
+
+
+
+		}
+
 	}
-	
-	public T select(T:Entity, E...)(T entity) if(args.length) {
-	
-		return null;
+
+	public T[] select(string[] fields, T:Entity, E...)(E args, Select select=Select.init) if(args.length == fields.length) {
+		SelectInfo selectInfo;
+		selectInfo.tableName = new T().tableName;
+		selectImpl(selectInfo, select);
+		return [];
 	}
-	
-	public R selectFields(R, T:Entity, E...)(T entity) {
-		
-		return R.init;
+
+	public T selectOne(string[] fields, T:Entity, E...)(E args, Select select=Select.init) {
+		select.limit = 1;
+		T[] ret = this.select!(fields, T, E)(args, select);
+		if(ret.length) return ret[0];
+		else return null;
+	}
+
+	protected abstract void selectImpl(SelectInfo, Select);
+
+	protected static struct SelectInfo {
+
+		string tableName;
+
 	}
 	
 	/**
 	 * Inserts a new entity into the database.
+	 * This method does not alter the entity: to update it after an insert
+	 * use select.
 	 * Example:
 	 * ---
 	 * Test test = new Test();
 	 * test.a = 55;
 	 * test.b = "Test";
 	 * database.insert(test);
-	 * assert(!test.testId.isNull);
 	 * ---
 	 */
-	public void insert(T:Entity)(T entity) {
+	public void insert(T:Entity)(T entity, bool updateId=true) {
+		insertImpl(generateInsertInfo(entity));
+
+	}
+
+	private InsertInfo generateInsertInfo(T:Entity)(T entity) {
+		InsertInfo ret;
+		ret.tableName = entity.tableName;
+		static foreach(immutable member ; getEntityMembers!T) {
+			{
+				static if(!memberNullable!(typeof(__traits(getMember, T, member)))) enum condition = "true";
+				else enum condition = "!entity." ~ member ~ ".isNull";
+				if(mixin(condition)) {
+					InsertInfo.Field field;
+					field.name = memberName!(T, member);
+					field.value = escape(mixin("entity." ~ member));
+					ret.fields ~= field;
+				}
+			}
+		}
+		return ret;
+	}
+
+	protected abstract void insertImpl(InsertInfo);
+
+	protected static struct InsertInfo {
+
+		/**
+		 * Name of the table from the entity's tableName property.
+		 */
+		string tableName;
+
+		/**
+		 * Fields of the table from the entity's variables.
+		 */
+		Field[] fields;
+
+		static struct Field {
+
+			/**
+			 * Name of the field, either from @Name or converted from
+			 * the variable's name.
+			 */
+			string name;
+
+			string value;
+
+		}
 
 	}
 	
@@ -195,19 +276,41 @@ class Database {
 
 	public abstract void drop(string table);
 
-	protected enum Type {
+	protected enum Type : uint {
 
-		BOOL,
-		BYTE,
-		SHORT,
-		INT,
-		LONG,
-		FLOAT,
-		DOUBLE,
-		STRING,
-		BINARY
+		BOOL = 1 << 0,
+		BYTE = 1 << 1,
+		SHORT = 1 << 2,
+		INT = 1 << 3,
+		LONG = 1 << 4,
+		FLOAT = 1 << 5,
+		DOUBLE = 1 << 6,
+		CHAR = 1 << 7,
+		STRING = 1 << 8,
+		BINARY = 1 << 9,
+		CLOB = 1 << 10,
+		BLOB = 1 << 11,
 
 	}
+	
+	protected string escape(T)(T value) {
+		static if(is(T == Char) || is(T == char)) {
+			return escapeString([value]);
+		} else static if(is(T == String) || is(T == Clob) || is(T : string)) {
+			return escapeString(value);
+		} else static if(is(T == Binary) || is(T == Blob) || is(T : ubyte[])) {
+			return escapeBinary(value);
+		} else static if(is(T : Nullable!R, R)) {
+			if(value.isNull) return "null";
+			else return value.value.to!string;
+		} else {
+			return value.to!string;
+		}
+	}
+
+	protected abstract string escapeString(string);
+
+	protected abstract string escapeBinary(ubyte[]);
 
 }
 
@@ -216,18 +319,6 @@ private string memberName(T:Entity, string member)() {
 		return getUDAs!(__traits(getMember, T, member), Name)[0].name;
 	} else {
 		return member.toSnakeCase();
-	}
-}
-
-private string escape(T)(T value) {
-	static if(is(T : String) || is(T : string)) {
-		//TODO properly escape
-		return "`" ~ value ~ "`";
-	} else static if(is(T : Nullable!R, R)) {
-		if(value.isNull) return "null";
-		else return value.value.to!string;
-	} else {
-		return value.to!string;
 	}
 }
 
@@ -247,20 +338,28 @@ private Database.Type memberType(T)() {
 			return FLOAT;
 		} else static if(is(T : Double) || is(T == double)) {
 			return DOUBLE;
+		} else static if(is(T : Char) || is(T == char)) {
+			return CHAR;
 		} else static if(is(T : String) || is(T : string)) {
 			return STRING;
 		} else static if(is(T : Binary) || is(T : ubyte[])) {
 			return BINARY;
+		} else static if(is(T == Clob)) {
+			return CLOB;
+		} else static if(is(T == Blob)) {
+			return BLOB;
 		}
 	}
 }
 
 private bool memberNullable(T)() {
-	static if(is(T == bool) || is(T == byte) || is(T == ubyte) || is(T == short) || is(T == ushort) || is(T == int) || is(T == uint) || is(T == long) || is(T == ulong) || is(T == float) || is(T == double)) {
+	static if(is(T : Nullable!R, R)) return true;
+	else return false;
+	/*static if(is(T == bool) || is(T == byte) || is(T == ubyte) || is(T == short) || is(T == ushort) || is(T == int) || is(T == uint) || is(T == long) || is(T == ulong) || is(T == float) || is(T == double) || is(T == char)) {
 		return false;
 	} else {
 		return true;
-	}
+	}*/
 }
 
 private string[] getEntityMembers(T:Entity)() {
@@ -271,16 +370,6 @@ private string[] getEntityMembers(T:Entity)() {
 		}
 	}
 	return ret;
-}
-
-private bool isValidEntity(T:Entity)() {
-	size_t idCount = 0;
-	static foreach(immutable member ; getEntityMembers!T()) {
-		foreach(immutable uda ; __traits(getAttributes, __traits(getMember, T, member))) {
-			static if(is(uda == Id)) idCount++;
-		}
-	}
-	return idCount <= 1;
 }
 
 private string getEntityId(T:Entity)() {

@@ -117,7 +117,7 @@ class Stream(size_t idLength, Endian endianness, size_t length, bool lengthInclu
 		writeLength(buffer);
 		static if(usesSequence) buffer.write!(sequenceEndianness, S)(sequence++, length);
 		static if(idLength) buffer.write(_id, 0);
-		_socket.send(buffer.data);
+		if(_socket.send(buffer.data) == Socket.ERROR) throw new SocketException(lastSocketError);
 	}
 	
 	protected void writeLength(Buffer buffer) {

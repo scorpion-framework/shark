@@ -14,7 +14,7 @@ abstract class SqlDatabase : Database {
 
 	public abstract Buffer query(string);
 
-	// TABLE CREATION AND ALTERATION
+	// CREATE | ALTER
 
 	protected override void initImpl(InitInfo initInfo) {
 		TableInfo[string] tableInfo = getTableInfo(initInfo.tableName);
@@ -24,8 +24,8 @@ abstract class SqlDatabase : Database {
 			foreach(field ; initInfo.fields) {
 				fields ~= generateField(field);
 			}
-			if(initInfo.primaryKey.length) {
-				fields ~= "primary key(" ~ initInfo.primaryKey ~ ")";
+			if(initInfo.primaryKeys.length) {
+				fields ~= "primary key(" ~ initInfo.primaryKeys.join(",") ~ ")";
 			}
 			query("create table " ~ initInfo.tableName ~ " (" ~ fields.join(",") ~ ");");
 		} else {
@@ -35,9 +35,9 @@ abstract class SqlDatabase : Database {
 				if(ptr) {
 					// compare
 					//enforce!DatabaseException(field.type == ptr.type, "Type cannot be changed!");
-					if(field.type != ptr.type || field.nullable != ptr.nullable) {
+					if((field.type & ptr.type) == 0 || field.nullable != ptr.nullable) {
 						writeln("Field ", field.name, " was changed from ", ptr.nullable, " to ", field.nullable);
-						alterTableColumn(initInfo.tableName, field, field.type != ptr.type, field.nullable != ptr.nullable);
+						alterTableColumn(initInfo.tableName, field, (field.type & ptr.type) == 0, field.nullable != ptr.nullable);
 					}
 				} else {
 					// field added
@@ -61,7 +61,7 @@ abstract class SqlDatabase : Database {
 
 		string name;
 
-		Type type;
+		uint type;
 
 		size_t length;
 
@@ -75,7 +75,25 @@ abstract class SqlDatabase : Database {
 
 	protected abstract void alterTableColumn(string table, InitInfo.Field field, bool typeChanged, bool nullableChanged);
 
-	// DROPPING
+	// SELECT
+
+	protected override void selectImpl(SelectInfo selectInfo, Select select) {
+		selectInfo.writeln;
+	}
+
+	// INSERT
+
+	protected override void insertImpl(InsertInfo insertInfo) {
+		string[] names;
+		string[] values;
+		foreach(field ; insertInfo.fields) {
+			names ~= field.name;
+			values ~= field.value;
+		}
+		query("insert into " ~ insertInfo.tableName ~ " (" ~ names.join(",") ~ ") values (" ~ values.join(",") ~ ");");
+	}
+
+	// DROP
 
 	public override void dropIfExists(string table) {
 		query("drop table if exists " ~ table ~ ";");
@@ -83,6 +101,13 @@ abstract class SqlDatabase : Database {
 
 	public override void drop(string table) {
 		query("drop table " ~ table ~ ";");
+	}
+
+	// UTILS
+
+	protected override string escapeString(string value) {
+		//TODO properly escape
+		return "'" ~ value ~ "'";
 	}
 
 }

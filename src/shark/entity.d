@@ -6,7 +6,7 @@ interface Entity {
 
 }
 
-struct Nullable(T) {
+struct Nullable(T, ubyte id=0) if(!is(T : Object)) {
 
 	private bool _isNull = true;
 	private T _value;
@@ -22,6 +22,12 @@ struct Nullable(T) {
 	public @property T value(T value) {
 		_isNull = false;
 		return (_value = value);
+	}
+
+	public @property T value(Object object) {
+		assert(object is null);
+		_isNull = true;
+		return _value;
 	}
 	
 	alias value this;
@@ -42,9 +48,15 @@ alias Float = Nullable!float;
 
 alias Double = Nullable!double;
 
-alias String = Nullable!string;
+alias Char = Nullable!char;
 
-alias Binary = Nullable!(ubyte[]);
+alias String = Nullable!(string, 0);
+
+alias Binary = Nullable!(ubyte[], 0);
+
+alias Clob = Nullable!(string, 1);
+
+alias Blob = Nullable!(ubyte[], 1);
 
 struct Name { string name; }
 
@@ -57,5 +69,3 @@ enum NotNull;
 enum Unique;
 
 struct Length { size_t length; }
-
-enum Lob;

@@ -3,6 +3,8 @@ module shark.impl.mysql;
 import std.algorithm : max, canFind;
 import std.conv : to;
 import std.exception : enforce;
+import std.experimental.logger : trace;
+import std.digest : toHexString;
 import std.digest.sha : sha1Of, sha256Of;
 import std.socket;
 import std.string : join;
@@ -112,8 +114,8 @@ class MysqlDatabase : SqlDatabase {
 		buffer.writeData(new void[23]); // reserved
 		buffer.write0String(user);
 		if(password.length) {
-			immutable hash = method == "mysql_native_password" ? hashPassword1(password, authPluginData) : hashPassword2(password, authPluginData);
-			buffer.write(hash.length & ubyte.max);
+			immutable hash = method == "mysql_native_password" ? hashPassword!sha1Of(password, authPluginData) : hashPassword!sha256Of(password, authPluginData);
+			buffer.write(hash.length.to!ubyte);
 			buffer.write(hash);
 		} else {
 			buffer.write(ubyte(0));
@@ -123,18 +125,9 @@ class MysqlDatabase : SqlDatabase {
 		_stream.send(buffer);
 	}
 	
-	private string hashPassword1(string password, const(ubyte)[] nonce) {
-		auto password1 = sha1Of(password);
-		auto res = sha1Of(sha1Of(password1), nonce).dup;
-		foreach(i, ref r; res) {
-			r = r ^ password1[i];
-		}
-		return cast(string)res;
-	}
-	
-	private string hashPassword2(string password, const(ubyte)[] nonce) {
-		auto password1 = sha256Of(password);
-		auto res = sha256Of(sha256Of(password1), nonce).dup;
+	private string hashPassword(alias method)(string password, const(ubyte)[] nonce) {
+		auto password1 = method(password);
+		auto res = method(method(password1), nonce).dup;
 		foreach(i, ref r; res) {
 			r = r ^ password1[i];
 		}
@@ -153,23 +146,27 @@ class MysqlDatabase : SqlDatabase {
 	}
 
 	public override Buffer query(string query) {
-		debug writeln("Running MySQL query: ", query);
-		Buffer buffer = new Buffer(query.length + 1);
+		trace("Running query `" ~ query ~ "`");
+		Buffer buffer = new Buffer(query.length + 5);
 		buffer.write(ubyte(3));
 		buffer.write(query);
 		_stream.resetSequence();
 		_stream.send(buffer);
-		return receive();
+		buffer = receive();
+		buffer.data.writeln;
+		return buffer;
+		//return receive();
 	}
 
 	protected override TableInfo[string] getTableInfo(string table) {
-		query("describe " ~ table ~ ";");
+		//query("describe " ~ table ~ ";");
+		query("show tables;");
 		return null;
 	}
 
 	protected override string generateField(InitInfo.Field field) {
 		string[] ret = [field.name];
-		ret ~= convertType(field.type) ~ (field.length ? "(" ~ field.length.to!string ~ ")" : "");
+		ret ~= convertType(cast(Type)field.type) ~ (field.length ? "(" ~ field.length.to!string ~ ")" : "");
 		if(field.autoIncrement) ret ~= "auto_increment";
 		if(!field.nullable) ret ~= "not null";
 		if(field.unique) ret ~= "unique";
@@ -177,11 +174,28 @@ class MysqlDatabase : SqlDatabase {
 	}
 
 	private string convertType(Type type) {
-		return "???"; //TODO
+		final switch(type) with(Type) {
+			case BOOL: return "boolean";
+			case BYTE: return "tinyint";
+			case SHORT: return "smallint";
+			case INT: return "int";
+			case LONG: return "bigint";
+			case FLOAT: return "float";
+			case DOUBLE: return "double";
+			case CHAR: return "char";
+			case STRING: return "varchar";
+			case BINARY: return "binary";
+			case CLOB: return "clob";
+			case BLOB: return "blob";
+		}
 	}
 	
 	protected override void alterTableColumn(string table, InitInfo.Field field, bool typeChanged, bool nullableChanged) {
 		query("alter table " ~ table ~ " modify column " ~ generateField(field) ~ ";");
+	}
+
+	protected override string escapeBinary(ubyte[] value) {
+		return "0x" ~ toHexString(value);
 	}
 
 }
