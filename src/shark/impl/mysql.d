@@ -158,6 +158,10 @@ class MysqlDatabase : SqlDatabase {
 		//return receive();
 	}
 
+	public override SelectResult querySelect(string query) {
+		throw new Exception("Not implemented");
+	}
+
 	protected override TableInfo[string] getTableInfo(string table) {
 		//query("describe " ~ table ~ ";");
 		query("show tables;");

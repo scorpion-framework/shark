@@ -14,6 +14,10 @@ struct Nullable(T, ubyte id=0) if(!is(T : Object)) {
 	public @property bool isNull() {
 		return _isNull;
 	}
+
+	public void nullify() {
+		_isNull = true;
+	}
 	
 	public @property T value() {
 		return _value;
@@ -26,8 +30,13 @@ struct Nullable(T, ubyte id=0) if(!is(T : Object)) {
 
 	public @property T value(Object object) {
 		assert(object is null);
-		_isNull = true;
+		nullify();
 		return _value;
+	}
+
+	string toString() {
+		import std.conv : to;
+		return isNull ? "null" : value.to!string;
 	}
 	
 	alias value this;
@@ -60,7 +69,9 @@ alias Blob = Nullable!(ubyte[], 1);
 
 struct Name { string name; }
 
-enum Id;
+enum PrimaryKey;
+
+alias Id = PrimaryKey;
 
 enum AutoIncrement;
 

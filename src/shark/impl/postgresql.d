@@ -11,7 +11,7 @@ import std.system : Endian;
 
 import shark.database : DatabaseException, DatabaseConnectionException, ErrorCodeDatabaseException, ErrorCodesDatabaseException;
 import shark.sql : SqlDatabase;
-import shark.util : Stream, read0String, write0String;
+import shark.util : Stream, read0String, write0String, fromHexString;
 
 import xbuffer : Buffer;
 
@@ -118,6 +118,8 @@ class PostgresqlDatabase : SqlDatabase {
 		}
 	}
 
+	// QUERYING
+
 	public override Buffer query(string query) {
 		trace("Running query `" ~ query ~ "`");
 		_stream.id = "Q";
@@ -126,9 +128,60 @@ class PostgresqlDatabase : SqlDatabase {
 		_stream.send(buffer);
 		return receive();
 	}
+	
+	public override SelectResult querySelect(string query) {
+		SelectResult result;
+		Buffer buffer = this.query(query);
+		enforcePacketSequence('T');
+		ColumnInfo[] columns;
+		foreach(i ; 0..buffer.read!(Endian.bigEndian, ushort)()) {
+			ColumnInfo column;
+			column.column = buffer.read0String();
+			buffer.readData(6);
+			column.type = buffer.read!(Endian.bigEndian, uint)();
+			buffer.readData(8);
+			columns ~= column;
+			result.columns[column.column] = i;
+		}
+		while(true) {
+			buffer = receive();
+			if(_stream.id!char[0] == 'C') break;
+			enforcePacketSequence('D');
+			enforce!DatabaseConnectionException(buffer.read!(Endian.bigEndian, ushort)() == columns.length, "Length of the row doesn't match the column's");
+			SelectResult.Row[] rows;
+			foreach(column ; columns) {
+				rows ~= {
+					switch(column.type) {
+						case 16: return readString!bool(buffer);
+						case 17: return readString!(ubyte[])(buffer);
+						case 20: return readString!long(buffer);
+						case 21: return readString!short(buffer);
+						case 23: return readString!int(buffer);
+						case 25: return readString!string(buffer);
+						case 700: return readString!float(buffer);
+						case 701: return readString!double(buffer);
+						case 1042: return readString!char(buffer);
+						case 1043: return readString!string(buffer);
+						default: throw new DatabaseConnectionException("Unknwon type with id " ~ column.type.to!string);
+					}
+				}();
+			}
+			result.rows ~= rows;
+		}
+		return result;
+	}
+
+	private static struct ColumnInfo {
+
+		string column;
+		uint type;
+
+	}
+
+	// CREATE | ALTER
 
 	protected override TableInfo[string] getTableInfo(string table) {
-		Buffer buffer = query("select column_name, data_type, is_nullable, character_maximum_length, column_default from INFORMATION_SCHEMA.COLUMNS where table_name='" ~ table ~ "';");
+		Buffer buffer = query("select column_name, data_type, is_nullable, character_maximum_length, column_default from INFORMATION_SCHEMA.COLUMNS where table_name=" ~ escapeString(table) ~ ";");
 		if(_stream.id!char[0] == 'C') return null;
 		enforcePacketSequence('T');
 		enforce!DatabaseConnectionException(buffer.read!(Endian.bigEndian, ushort)() == 5, "Wrong number of fields returned by the server");
@@ -159,7 +212,7 @@ class PostgresqlDatabase : SqlDatabase {
 	private uint fromStringToType(string str) {
 		switch(str) with(Type) {
 			case "boolean": return BOOL;
-			case "smaillint": return BYTE | SHORT;
+			case "smaillint": return SHORT;
 			case "integer": return INT;
 			case "bigint": return LONG;
 			case "real": return FLOAT;
@@ -184,7 +237,7 @@ class PostgresqlDatabase : SqlDatabase {
 	private string fromTypeToString(Type type, bool autoIncrement, ref size_t length) {
 		final switch(type) with(Type) {
 			case BOOL: return "boolean";
-			case BYTE: return "int2";
+			case BYTE: throw new DatabaseException("Type byte is not supported");
 			case SHORT: return autoIncrement ? "serial2" : "int2";
 			case INT: return autoIncrement ? "serial4" : "int4";
 			case LONG: return autoIncrement ? "serial8" : "int8";
@@ -215,14 +268,30 @@ class PostgresqlDatabase : SqlDatabase {
 		query(q ~ ";");
 	}
 
+	// UTILS
+
 	private void enforcePacketSequence(char expected) {
 		immutable current = _stream.id!char[0];
 		if(current != expected) throw new WrongPacketSequenceException(expected, current);
 	}
 
 	protected override string escapeBinary(ubyte[] value) {
-		//return "E'\\x" ~ toHexString(value) ~ "'";
-		return "decode('" ~ toHexString(value) ~ "', 'hex')";
+		return "'\\x" ~ toHexString(value) ~ "'";
+		//return "decode('" ~ toHexString(value) ~ "', 'hex')";
+	}
+	
+	private SelectResult.Row readString(T)(Buffer buffer) {
+		immutable length = buffer.read!(Endian.bigEndian, uint)();
+		if(length == uint.max) return null;
+		else {
+			static if(is(T == ubyte[])) {
+				string hex = buffer.read!string(length);
+				assert(hex.length > 4 && hex.length % 2 == 0);
+				return SelectResult.Row.from(fromHexString(hex[2..$]));
+			}
+			else static if(is(T == bool)) return SelectResult.Row.from(buffer.read!string(length) == "t");
+			else return SelectResult.Row.from(to!T(buffer.read!string(length)));
+		}
 	}
 
 }

@@ -153,6 +153,14 @@ void write0String(Buffer buffer, string str) {
 	buffer.write(ubyte(0));
 }
 
+ubyte[] fromHexString(string hex) {
+	ubyte[] ret = new ubyte[hex.length / 2];
+	foreach(i ; 0..ret.length) {
+		ret[i] = to!ubyte(hex[i*2..i*2+2], 16);
+	}
+	return ret;
+}
+
 string toSnakeCase(string input) {
 	Appender!string output;
 	foreach(c ; input) {

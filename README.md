@@ -7,6 +7,12 @@ Shark
 
 Native connector for various databases.
 
+Supports:
+	- PostreSQL
+
+Work in progress:
+	- MySQL (and MariaDB)
+
 ```d
 import shark;
 
@@ -16,7 +22,7 @@ class Test : Entity {
 		return "test";
 	}
 	
-	@Id
+	@PrimaryKey
 	@AutoIncrement
 	Integer testId;
 	

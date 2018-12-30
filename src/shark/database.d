@@ -43,7 +43,7 @@ class Database {
 	 *        return "test";
 	 *    }
 	 *
-	 *    @Id
+	 *    @PrimaryKey
 	 *    @AutoIncrement
 	 *    Long testId;
 	 *
@@ -73,7 +73,7 @@ class Database {
 				field.type = memberType!(typeof(__traits(getMember, T, member)));
 				field.nullable = memberNullable!(typeof(__traits(getMember, T, member)));
 				foreach(uda ; __traits(getAttributes, __traits(getMember, T, member))) {
-					static if(is(uda == Id)) ret.primaryKeys ~= field.name;
+					static if(is(uda == PrimaryKey)) ret.primaryKeys ~= field.name;
 					else static if(is(uda == AutoIncrement)) {
 						field.autoIncrement = true;
 						field.nullable = false;
@@ -175,11 +175,57 @@ class Database {
 
 	}
 
-	public T[] select(string[] fields, T:Entity, E...)(E args, Select select=Select.init) if(args.length == fields.length) {
+	public T[] select(string[] fields, T:Entity, E...)(E args, Select select=Select.init) {
 		SelectInfo selectInfo;
 		selectInfo.tableName = new T().tableName;
-		selectImpl(selectInfo, select);
-		return [];
+		selectInfo.fields = fields;
+		SelectResult result = selectImpl(selectInfo, select);
+		T[] ret;
+		foreach(row ; result.rows) {
+			T entity = new T();
+			static foreach(immutable member ; getEntityMembers!T) {
+				{
+					auto ptr = memberName!(T, member) in result.columns;
+					if(ptr) {
+						auto v = row[*ptr];
+						if(v is null) {
+							mixin("entity." ~ member).nullify();
+						} else {
+							alias R = typeof(__traits(getMember, T, member));
+							static if(is(R == Bool) || is(R == bool)) {
+								auto value = cast(SelectResult.RowImpl!bool)v;
+							} else static if(is(R == Byte) || is(R == byte) || is(R == ubyte)) {
+								auto value = cast(SelectResult.RowImpl!byte)v;
+							} else static if(is(R == Short) || is(R == short) || is(R == ushort)) {
+								auto value = cast(SelectResult.RowImpl!short)v;
+							} else static if(is(R == Integer) || is(R == int) || is(R == uint)) {
+								auto value = cast(SelectResult.RowImpl!int)v;
+							} else static if(is(R == Long) || is(R == long) || is(R == ulong)) {
+								auto value = cast(SelectResult.RowImpl!long)v;
+							} else static if(is(R == Float) || is(R == float)) {
+								auto value = cast(SelectResult.RowImpl!float)v;
+							} else static if(is(R == Double) || is(R == double)) {
+								auto value = cast(SelectResult.RowImpl!double)v;
+							} else static if(is(R == Char) || is(R == char)) {
+								auto value = cast(SelectResult.RowImpl!char)v;
+							} else static if(is(R == String) || is(R == Clob) || is(R == string)) {
+								auto value = cast(SelectResult.RowImpl!string)v;
+							} else static if(is(R == Binary) || is(R == Blob) || is(R == ubyte[])) {
+								auto value = cast(SelectResult.RowImpl!(ubyte[]))v;
+							}
+							if(value is null) throw new DatabaseException("Could not cast " ~ row[*ptr].toString() ~ " to " ~ R.stringof);
+							mixin("entity." ~ member) = value.value;
+						}
+					}
+				}
+			}
+			ret ~= entity;
+		}
+		return ret;
+	}
+
+	public T[] select(T:Entity)(Select select=Select.init) {
+		return this.select!([], T)("", select);
 	}
 
 	public T selectOne(string[] fields, T:Entity, E...)(E args, Select select=Select.init) {
@@ -189,12 +235,43 @@ class Database {
 		else return null;
 	}
 
-	protected abstract void selectImpl(SelectInfo, Select);
+	protected abstract SelectResult selectImpl(SelectInfo, Select);
 
 	protected static struct SelectInfo {
 
 		string tableName;
 
+		string[] fields;
+
+	}
+	
+	public static struct SelectResult {
+		
+		size_t[string] columns; // position in the array of the column
+		
+		Row[][] rows;
+		
+		static class Row {
+			
+			static Row from(T)(T value) {
+				RowImpl!T ret = new RowImpl!T();
+				ret.value = value;
+				return ret;
+			}
+			
+		}
+		
+		static class RowImpl(T) : Row {
+			
+			T value;
+
+			override string toString() {
+				import std.conv;
+				return value.to!string;
+			}
+			
+		}
+		
 	}
 	
 	/**
@@ -254,6 +331,9 @@ class Database {
 			 */
 			string name;
 
+			/**
+			 * Value of the field converted into a string.
+			 */
 			string value;
 
 		}
@@ -324,30 +404,30 @@ private string memberName(T:Entity, string member)() {
 
 private Database.Type memberType(T)() {
 	with(Database.Type) {
-		static if(is(T : Bool) || is(T == bool)) {
+		static if(is(T == Bool) || is(T == bool)) {
 			return BOOL;
-		} else static if(is(T : Byte) || is(T == byte) || is(T == ubyte)) {
+		} else static if(is(T == Byte) || is(T == byte) || is(T == ubyte)) {
 			return BYTE;
-		} else static if(is(T : Short) || is(T == short) || is(T == ushort)) {
+		} else static if(is(T == Short) || is(T == short) || is(T == ushort)) {
 			return SHORT;
-		} else static if(is(T : Integer) || is(T == int) || is(T == uint)) {
+		} else static if(is(T == Integer) || is(T == int) || is(T == uint)) {
 			return INT;
-		} else static if(is(T : Long) || is(T == long) || is(T == ulong)) {
+		} else static if(is(T == Long) || is(T == long) || is(T == ulong)) {
 			return LONG;
-		} else static if(is(T : Float) || is(T == float)) {
+		} else static if(is(T == Float) || is(T == float)) {
 			return FLOAT;
-		} else static if(is(T : Double) || is(T == double)) {
+		} else static if(is(T == Double) || is(T == double)) {
 			return DOUBLE;
-		} else static if(is(T : Char) || is(T == char)) {
+		} else static if(is(T == Char) || is(T == char)) {
 			return CHAR;
-		} else static if(is(T : String) || is(T : string)) {
-			return STRING;
-		} else static if(is(T : Binary) || is(T : ubyte[])) {
-			return BINARY;
 		} else static if(is(T == Clob)) {
 			return CLOB;
 		} else static if(is(T == Blob)) {
 			return BLOB;
+		} else static if(is(T == String) || is(T : string)) {
+			return STRING;
+		} else static if(is(T == Binary) || is(T : ubyte[])) {
+			return BINARY;
 		}
 	}
 }
@@ -370,12 +450,6 @@ private string[] getEntityMembers(T:Entity)() {
 		}
 	}
 	return ret;
-}
-
-private string getEntityId(T:Entity)() {
-	static foreach(immutable member ; getEntityMembers!T()) {
-		static if(hasUDA!(__traits(getMember, T, member), Id)) return member;
-	}
 }
 
 class DatabaseException : Exception {

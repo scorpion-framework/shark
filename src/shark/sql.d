@@ -14,6 +14,8 @@ abstract class SqlDatabase : Database {
 
 	public abstract Buffer query(string);
 
+	public abstract SelectResult querySelect(string);
+
 	// CREATE | ALTER
 
 	protected override void initImpl(InitInfo initInfo) {
@@ -36,18 +38,17 @@ abstract class SqlDatabase : Database {
 					// compare
 					//enforce!DatabaseException(field.type == ptr.type, "Type cannot be changed!");
 					if((field.type & ptr.type) == 0 || field.nullable != ptr.nullable) {
-						writeln("Field ", field.name, " was changed from ", ptr.nullable, " to ", field.nullable);
 						alterTableColumn(initInfo.tableName, field, (field.type & ptr.type) == 0, field.nullable != ptr.nullable);
 					}
 				} else {
 					// field added
-					query("alter table " ~ initInfo.tableName ~ " add " ~ generateField(field) ~ ";");
+					alterTableAddColumn(initInfo.tableName, field);
 				}
 				tableInfo.remove(field.name);
 			}
 			foreach(name, field; tableInfo) {
 				// field removed, just drop it
-				query("alter table " ~ initInfo.tableName ~ " drop " ~ name ~ ";");
+				alterTableDropColumn(initInfo.tableName, name);
 			}
 		}
 	}
@@ -75,10 +76,18 @@ abstract class SqlDatabase : Database {
 
 	protected abstract void alterTableColumn(string table, InitInfo.Field field, bool typeChanged, bool nullableChanged);
 
+	protected void alterTableAddColumn(string table, InitInfo.Field field) {
+		query("alter table " ~ table ~ " add " ~ generateField(field) ~ ";");
+	}
+
+	protected void alterTableDropColumn(string table, string column) {
+		query("alter table " ~ table ~ " drop " ~ column ~ ";");
+	}
+
 	// SELECT
 
-	protected override void selectImpl(SelectInfo selectInfo, Select select) {
-		selectInfo.writeln;
+	protected override SelectResult selectImpl(SelectInfo selectInfo, Select select) {
+		return querySelect("select " ~ (selectInfo.fields.length ? selectInfo.fields.join(",") : "*") ~ " from " ~ selectInfo.tableName ~ ";");
 	}
 
 	// INSERT
