@@ -9,11 +9,11 @@ Native connector for various databases.
 
 Supports:
 
-	- PostreSQL
+- PostreSQL
 
 Work in progress:
 
-	- MySQL (and MariaDB)
+- MySQL (and MariaDB)
 
 ```d
 import shark;

@@ -4,7 +4,12 @@ unittest {
 
 	import std.exception : assertThrown;
 
-	import shark;
+	import shark.database;
+	import shark.entity;
+	import shark.sql;
+
+	import shark.impl.mysql;
+	import shark.impl.postgresql;
 
 	static class Test : Entity {
 
@@ -80,6 +85,12 @@ unittest {
 
 	}
 
+	static class Test4 : Test {
+
+		string str;
+
+	}
+
 	Database[] databases;
 
 	Database mysql = new MysqlDatabase("localhost");
@@ -130,7 +141,6 @@ unittest {
 		assert(test1.test == "test");
 
 		database.drop("test");
-
 		database.init!Test2();
 
 		Test2 test2 = new Test2();
@@ -165,7 +175,6 @@ unittest {
 		assert(test2.n == [0, 0, 0, 0, 0, 0, 0]);
 
 		database.drop("test");
-
 		database.init!Test3();
 
 		Test3 test3 = new Test3();
@@ -173,6 +182,17 @@ unittest {
 		test3.id2 = "test";
 		test3.value = int.max;
 		database.insert(test3);
+
+		database.drop("test");
+		database.init!Test4();
+
+		Test4 test4 = new Test4();
+		test4.str = "'";
+		database.insert(test4);
+		test4.str = "');drop table test;--";
+		database.insert(test4);
+
+		database.close();
 
 	}
 

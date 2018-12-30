@@ -32,6 +32,8 @@ class Database {
 		this.connect(null, "", password);
 	}
 
+	public abstract void close();
+
 	// INIT
 	
 	/**

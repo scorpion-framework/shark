@@ -105,7 +105,11 @@ class PostgresqlDatabase : SqlDatabase {
 			}
 		} while(loop);
 		// prepare a statement for table description
-		//prepareQuery(infoStatement, "select column_name, data_type, is_nullable, character_maximum_length, column_default from INFORMATION_SCHEMA.COLUMNS where table_name=$1;", Param.VARCHAR);
+		prepareQuery(infoStatement, "select column_name, data_type, is_nullable, character_maximum_length, column_default from INFORMATION_SCHEMA.COLUMNS where table_name=$1;", Param.VARCHAR);
+	}
+	
+	public override void close() {
+		_stream.socket.close();
 	}
 
 	private Buffer receive() {
@@ -145,8 +149,7 @@ class PostgresqlDatabase : SqlDatabase {
 
 	private void sendFlush() {
 		_stream.id = "H";
-		Buffer buffer = new Buffer(8);
-		buffer.write!(Endian.bigEndian, uint)(4);
+		Buffer buffer = new Buffer(5);
 		_stream.send(buffer);
 	}
 
@@ -161,7 +164,7 @@ class PostgresqlDatabase : SqlDatabase {
 	}
 
 	public void prepareQuery(string statement, string query, Param[] params...) {
-		trace("Preparing query `" ~ query ~ "`");
+		trace("Preparing statement `" ~ statement ~ "` using `" ~ query ~ "`");
 		_stream.id = "P";
 		Buffer buffer = new Buffer(statement.length + query.length + 9 + params.length * 4);
 		buffer.write0String(statement);
@@ -172,6 +175,69 @@ class PostgresqlDatabase : SqlDatabase {
 		sendFlush();
 		receive();
 		enforcePacketSequence('1');
+	}
+
+	public void executeQuery(string statement, Prepared.Param[] params...) {
+		trace("Executing prepared statement `" ~ statement ~ "` with parameters " ~ params.to!string);
+		Buffer buffer = new Buffer(512);
+		_stream.id = "B";
+		immutable length = params.length.to!ushort;
+		buffer.write0String("");
+		buffer.write0String(statement);
+		buffer.write!(Endian.bigEndian, ushort)(length);
+		foreach(param ; params) {
+			static if(is(typeof(param) : string)) buffer.write!(Endian.bigEndian, ushort)(false);
+			else buffer.write!(Endian.bigEndian, ushort)(true);
+		}
+		buffer.write!(Endian.bigEndian, ushort)(length);
+		void writeImpl(T)(T value) {
+			auto str = value.to!string;
+			buffer.write!(Endian.bigEndian, uint)(str.length.to!uint);
+			buffer.write(str);
+		}
+		foreach(param ; params) {
+			if(param is null) {
+				buffer.write!(Endian.bigEndian, uint)(uint.max);
+			} else {
+				final switch(param.type) with(Type) {
+					case BOOL:
+						writeImpl(param.to!string[0]);
+						break;
+					case BYTE:
+					case SHORT:
+					case INT:
+					case LONG:
+					case FLOAT:
+					case DOUBLE:
+					case CHAR:
+					case STRING:
+					case CLOB:
+						writeImpl(param.to!string);
+						break;
+					case BINARY:
+					case BLOB:
+						writeImpl(cast(string)(cast(Prepared.ParamImpl!(ubyte[], Type.BINARY))param).value);
+						break;
+				}
+			}
+		}
+		buffer.write!(Endian.bigEndian, ushort)(1);
+		buffer.write!(Endian.bigEndian, ushort)(1);
+		_stream.send(buffer);
+		buffer.reset();
+		/*_stream.id = "D";
+		buffer.write('S');
+		buffer.write0String(statement);
+		_stream.send(buffer);*/
+		buffer.reset();
+		_stream.id = "E";
+		buffer.write0String("");
+		buffer.write(0);
+		_stream.send(buffer);
+		buffer.reset();
+		_stream.id = "S";
+		_stream.send(buffer);
+		receiveAndEnforcePacketSequence('2');
 	}
 	
 	public override Result querySelect(string query) {
@@ -232,13 +298,12 @@ class PostgresqlDatabase : SqlDatabase {
 	// CREATE | ALTER
 
 	protected override TableInfo[string] getTableInfo(string table) {
-		query("select column_name, data_type, is_nullable, character_maximum_length, column_default from INFORMATION_SCHEMA.COLUMNS where table_name=" ~ escapeString(table) ~ ";");
-		Buffer buffer = receive();
-		enforcePacketSequence('T');
-		enforce!DatabaseConnectionException(buffer.read!(Endian.bigEndian, ushort)() == 5, "Wrong number of fields returned by the server");
+		//query("select column_name, data_type, is_nullable, character_maximum_length, column_default from INFORMATION_SCHEMA.COLUMNS where table_name=" ~ escapeString(table) ~ ";");
+		executeQuery(infoStatement, Prepared.prepare(table));
 		TableInfo[string] ret;
 		while(true) {
-			buffer = receive();
+			Buffer buffer = receive();
+			buffer.data.writeln;
 			if(_stream.id!char[0] == 'C') break;
 			enforcePacketSequence('D');
 			enforce!DatabaseConnectionException(buffer.read!(Endian.bigEndian, ushort)() == 5, "Wrong number of fields returned by the server");
@@ -247,9 +312,10 @@ class PostgresqlDatabase : SqlDatabase {
 			field.type = fromStringToType(buffer.read!string(buffer.read!(Endian.bigEndian, uint)()));
 			field.nullable = buffer.read!string(buffer.read!(Endian.bigEndian, uint)()) == "YES";
 			immutable length = buffer.read!(Endian.bigEndian, uint)();
-			if(length != uint.max) field.length = to!uint(buffer.read!string(length));
+			if(length != uint.max) field.length = buffer.read!(Endian.bigEndian, uint)();
 			immutable defaultValue = buffer.read!(Endian.bigEndian, uint)();
 			if(defaultValue != uint.max) field.defaultValue = buffer.read!string(defaultValue).idup;
+			field.writeln;
 			ret[field.name] = field;
 		}
 		enforceReadyForQuery();

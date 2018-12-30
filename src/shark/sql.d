@@ -4,6 +4,7 @@ import std.exception : enforce;
 import std.string : join;
 
 import shark.database;
+import shark.entity;
 
 import xbuffer : Buffer;
 
@@ -121,8 +122,58 @@ abstract class SqlDatabase : Database {
 	// UTILS
 
 	protected override string escapeString(string value) {
-		//TODO properly escape
-		return "'" ~ value ~ "'";
+		import std.string : replace;
+		return "'" ~ value.replace("'", "''") ~ "'";
+	}
+
+	/**
+	 * Utilities for prepared statements.
+	 */
+	public static struct Prepared {
+
+		static interface Param {
+
+			public @property Type type();
+
+		}
+
+		static class ParamImpl(T, Type _type) : Param {
+
+			public T value;
+
+			public override Type type() {
+				return _type;
+			}
+
+			public this(T value) {
+				this.value = value;
+			}
+
+			override string toString() {
+				import std.conv : to;
+				return value.to!string;
+			}
+
+			alias value this;
+
+		}
+
+		static Param[] prepare(E...)(E params) {
+			Param[] ret;
+			foreach(param ; params) {
+				alias T = typeof(param);
+				static if(is(T == Bool) || is(T == bool)) ret ~= new ParamImpl!(bool, Type.BOOL)(param);
+				else static if(is(T == Byte) || is(T == byte) || is(T == ubyte)) ret ~= new ParamImpl!(byte, Type.BYTE)(param);
+				else static if(is(T == Short) || is(T == short) || is(T == ushort)) ret ~= new ParamImpl!(short, Type.SHORT)(param);
+				else static if(is(T == Integer) || is(T == int) || is(T == uint)) ret ~= new ParamImpl!(int, Type.INT)(param);
+				else static if(is(T == Long) || is(T == long) || is(T == ulong)) ret ~= new ParamImpl!(long, Type.LONG)(param);
+				// ...
+				else static if(is(T == String) || is(T == string)) ret ~= new ParamImpl!(string, Type.STRING)(param);
+				else static assert(0, "Type " ~ T.stringof ~ " not supported");
+			}
+			return ret;
+		}
+
 	}
 
 }

@@ -133,6 +133,10 @@ class MysqlDatabase : SqlDatabase {
 		}
 		return cast(string)res;
 	}
+
+	public override void close() {
+		_stream.socket.close();
+	}
 	
 	private Buffer receive() {
 		Buffer buffer = _stream.receive();
