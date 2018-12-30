@@ -8,9 +8,11 @@ Shark
 Native connector for various databases.
 
 Supports:
+
 	- PostreSQL
 
 Work in progress:
+
 	- MySQL (and MariaDB)
 
 ```d

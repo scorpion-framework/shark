@@ -12,9 +12,9 @@ import std.stdio;
 
 abstract class SqlDatabase : Database {
 
-	public abstract Buffer query(string);
+	public abstract void query(string);
 
-	public abstract SelectResult querySelect(string);
+	public abstract Result querySelect(string);
 
 	// CREATE | ALTER
 
@@ -29,7 +29,7 @@ abstract class SqlDatabase : Database {
 			if(initInfo.primaryKeys.length) {
 				fields ~= "primary key(" ~ initInfo.primaryKeys.join(",") ~ ")";
 			}
-			query("create table " ~ initInfo.tableName ~ " (" ~ fields.join(",") ~ ");");
+			createTable(initInfo.tableName, fields);
 		} else {
 			// alter the table
 			foreach(field ; initInfo.fields) {
@@ -74,6 +74,10 @@ abstract class SqlDatabase : Database {
 
 	protected abstract string generateField(InitInfo.Field field);
 
+	protected void createTable(string table, string[] fields) {
+		query("create table " ~ table ~ " (" ~ fields.join(",") ~ ");");
+	}
+
 	protected abstract void alterTableColumn(string table, InitInfo.Field field, bool typeChanged, bool nullableChanged);
 
 	protected void alterTableAddColumn(string table, InitInfo.Field field) {
@@ -86,21 +90,23 @@ abstract class SqlDatabase : Database {
 
 	// SELECT
 
-	protected override SelectResult selectImpl(SelectInfo selectInfo, Select select) {
+	protected override Result selectImpl(SelectInfo selectInfo, Select select) {
 		return querySelect("select " ~ (selectInfo.fields.length ? selectInfo.fields.join(",") : "*") ~ " from " ~ selectInfo.tableName ~ ";");
 	}
 
 	// INSERT
 
-	protected override void insertImpl(InsertInfo insertInfo) {
+	protected override Result insertImpl(InsertInfo insertInfo) {
 		string[] names;
 		string[] values;
 		foreach(field ; insertInfo.fields) {
 			names ~= field.name;
 			values ~= field.value;
 		}
-		query("insert into " ~ insertInfo.tableName ~ " (" ~ names.join(",") ~ ") values (" ~ values.join(",") ~ ");");
+		return insertInto(insertInfo.tableName, names, values, insertInfo.primaryKeys);
 	}
+
+	protected abstract Result insertInto(string table, string[] names, string[] fields, string[] primaryKeys);
 
 	// DROP
 

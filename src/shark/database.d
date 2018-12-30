@@ -31,6 +31,8 @@ class Database {
 	public void connect(string password="") {
 		this.connect(null, "", password);
 	}
+
+	// INIT
 	
 	/**
 	 * Initializes an entity, either by creating it or updating
@@ -92,66 +94,25 @@ class Database {
 
 	protected static struct InitInfo {
 
-		/**
-		 * Name of the table from the entity's tableName property.
-		 */
 		string tableName;
-
-		/**
-		 * Fields of the table from the entity's variables.
-		 */
 		Field[] fields;
-
-		/**
-		 * If not null indicates which field is the primary key.
-		 */
 		string[] primaryKeys;
 
 		static struct Field {
 
-			/**
-			 * Name of the field, either from @Name or converted from
-			 * the variable's name.
-			 */
 			string name;
-
-			/**
-			 * Type of the field, from the variable's type.
-			 */
 			uint type;
-
-			/**
-			 * Optional length of the field from the @Length attribute.
-			 * Indicates the length when higher than 0.
-			 */
 			size_t length = 0;
-
-			/**
-			 * Indicates whether the type can be null, either from the
-			 * type of the variable or the @NotNull attribute.
-			 */
 			bool nullable = true;
-
-			/**
-			 * Indicates whether the type is unique in the table's rows,
-			 * from the @Unique attribute.
-			 */
 			bool unique = false;
-
-			/**
-			 * Indicates whether the type should be incremented each type
-			 * a new row is inserted.
-			 */
 			bool autoIncrement = false;
-
-			/**
-			 * Indicates the defaultValue from the @Default attribute.
-			 */
 			string defaultValue;
 
 		}
 
 	}
+
+	// SELECT
 
 	public static struct Select {
 
@@ -179,46 +140,11 @@ class Database {
 		SelectInfo selectInfo;
 		selectInfo.tableName = new T().tableName;
 		selectInfo.fields = fields;
-		SelectResult result = selectImpl(selectInfo, select);
+		Result result = selectImpl(selectInfo, select);
 		T[] ret;
 		foreach(row ; result.rows) {
 			T entity = new T();
-			static foreach(immutable member ; getEntityMembers!T) {
-				{
-					auto ptr = memberName!(T, member) in result.columns;
-					if(ptr) {
-						auto v = row[*ptr];
-						if(v is null) {
-							mixin("entity." ~ member).nullify();
-						} else {
-							alias R = typeof(__traits(getMember, T, member));
-							static if(is(R == Bool) || is(R == bool)) {
-								auto value = cast(SelectResult.RowImpl!bool)v;
-							} else static if(is(R == Byte) || is(R == byte) || is(R == ubyte)) {
-								auto value = cast(SelectResult.RowImpl!byte)v;
-							} else static if(is(R == Short) || is(R == short) || is(R == ushort)) {
-								auto value = cast(SelectResult.RowImpl!short)v;
-							} else static if(is(R == Integer) || is(R == int) || is(R == uint)) {
-								auto value = cast(SelectResult.RowImpl!int)v;
-							} else static if(is(R == Long) || is(R == long) || is(R == ulong)) {
-								auto value = cast(SelectResult.RowImpl!long)v;
-							} else static if(is(R == Float) || is(R == float)) {
-								auto value = cast(SelectResult.RowImpl!float)v;
-							} else static if(is(R == Double) || is(R == double)) {
-								auto value = cast(SelectResult.RowImpl!double)v;
-							} else static if(is(R == Char) || is(R == char)) {
-								auto value = cast(SelectResult.RowImpl!char)v;
-							} else static if(is(R == String) || is(R == Clob) || is(R == string)) {
-								auto value = cast(SelectResult.RowImpl!string)v;
-							} else static if(is(R == Binary) || is(R == Blob) || is(R == ubyte[])) {
-								auto value = cast(SelectResult.RowImpl!(ubyte[]))v;
-							}
-							if(value is null) throw new DatabaseException("Could not cast " ~ row[*ptr].toString() ~ " to " ~ R.stringof);
-							mixin("entity." ~ member) = value.value;
-						}
-					}
-				}
-			}
+			result.apply(entity, row);
 			ret ~= entity;
 		}
 		return ret;
@@ -235,44 +161,18 @@ class Database {
 		else return null;
 	}
 
-	protected abstract SelectResult selectImpl(SelectInfo, Select);
+	protected abstract Result selectImpl(SelectInfo, Select);
 
 	protected static struct SelectInfo {
 
 		string tableName;
-
 		string[] fields;
 
 	}
-	
-	public static struct SelectResult {
-		
-		size_t[string] columns; // position in the array of the column
-		
-		Row[][] rows;
-		
-		static class Row {
-			
-			static Row from(T)(T value) {
-				RowImpl!T ret = new RowImpl!T();
-				ret.value = value;
-				return ret;
-			}
-			
-		}
-		
-		static class RowImpl(T) : Row {
-			
-			T value;
 
-			override string toString() {
-				import std.conv;
-				return value.to!string;
-			}
-			
-		}
-		
-	}
+	deprecated alias SelectResult = Result;
+
+	// INSERT
 	
 	/**
 	 * Inserts a new entity into the database.
@@ -287,15 +187,16 @@ class Database {
 	 * ---
 	 */
 	public void insert(T:Entity)(T entity, bool updateId=true) {
-		insertImpl(generateInsertInfo(entity));
-
+		Result result = insertImpl(generateInsertInfo(entity, updateId));
+		foreach(row ; result.rows) result.apply(entity, row);
 	}
 
-	private InsertInfo generateInsertInfo(T:Entity)(T entity) {
+	private InsertInfo generateInsertInfo(T:Entity)(T entity, bool updateId) {
 		InsertInfo ret;
 		ret.tableName = entity.tableName;
 		static foreach(immutable member ; getEntityMembers!T) {
 			{
+				static if(hasUDA!(__traits(getMember, T, member), PrimaryKey)) if(updateId) ret.primaryKeys ~= memberName!(T, member);
 				static if(!memberNullable!(typeof(__traits(getMember, T, member)))) enum condition = "true";
 				else enum condition = "!entity." ~ member ~ ".isNull";
 				if(mixin(condition)) {
@@ -309,36 +210,24 @@ class Database {
 		return ret;
 	}
 
-	protected abstract void insertImpl(InsertInfo);
+	protected abstract Result insertImpl(InsertInfo);
 
 	protected static struct InsertInfo {
 
-		/**
-		 * Name of the table from the entity's tableName property.
-		 */
 		string tableName;
-
-		/**
-		 * Fields of the table from the entity's variables.
-		 */
 		Field[] fields;
+		string[] primaryKeys;
 
 		static struct Field {
 
-			/**
-			 * Name of the field, either from @Name or converted from
-			 * the variable's name.
-			 */
 			string name;
-
-			/**
-			 * Value of the field converted into a string.
-			 */
 			string value;
 
 		}
 
 	}
+
+	// UPDATE
 	
 	public void update(string[] fields, string[] where, T:Entity)(T entity) {
 
@@ -352,9 +241,82 @@ class Database {
 		return update!(getEntityMembers!T, T)(entity);
 	}
 
+	// DROP
+
 	public abstract void dropIfExists(string table);
 
 	public abstract void drop(string table);
+
+	// UTILS
+	
+	public static struct Result {
+		
+		size_t[string] columns; // position in the array of the column
+		
+		Row[][] rows;
+
+		void apply(T)(ref T entity, Row[] row) {
+			static foreach(immutable member ; getEntityMembers!T) {
+				{
+					auto ptr = memberName!(T, member) in columns;
+					if(ptr) {
+						auto v = row[*ptr];
+						if(v is null) {
+							static if(memberNullable!(typeof(__traits(getMember, T, member)))) mixin("entity." ~ member).nullify();
+							else throw new DatabaseException("Could not nullify " ~ T.stringof ~ "." ~ member);
+						} else {
+							alias R = typeof(__traits(getMember, T, member));
+							static if(is(R == Bool) || is(R == bool)) {
+								auto value = cast(Result.RowImpl!bool)v;
+							} else static if(is(R == Byte) || is(R == byte) || is(R == ubyte)) {
+								auto value = cast(Result.RowImpl!byte)v;
+							} else static if(is(R == Short) || is(R == short) || is(R == ushort)) {
+								auto value = cast(Result.RowImpl!short)v;
+							} else static if(is(R == Integer) || is(R == int) || is(R == uint)) {
+								auto value = cast(Result.RowImpl!int)v;
+							} else static if(is(R == Long) || is(R == long) || is(R == ulong)) {
+								auto value = cast(Result.RowImpl!long)v;
+							} else static if(is(R == Float) || is(R == float)) {
+								auto value = cast(Result.RowImpl!float)v;
+							} else static if(is(R == Double) || is(R == double)) {
+								auto value = cast(Result.RowImpl!double)v;
+							} else static if(is(R == Char) || is(R == char)) {
+								auto value = cast(Result.RowImpl!char)v;
+							} else static if(is(R == String) || is(R == Clob) || is(R == string)) {
+								auto value = cast(Result.RowImpl!string)v;
+							} else static if(is(R == Binary) || is(R == Blob) || is(R == ubyte[])) {
+								auto value = cast(Result.RowImpl!(ubyte[]))v;
+							}
+							if(value is null) throw new DatabaseException("Could not cast " ~ row[*ptr].toString() ~ " to " ~ R.stringof);
+							mixin("entity." ~ member) = value.value;
+						}
+					}
+				}
+			}
+		}
+		
+		static class Row {
+			
+			static Row from(T)(T value) {
+				RowImpl!T ret = new RowImpl!T();
+				ret.value = value;
+				return ret;
+			}
+			
+		}
+		
+		static class RowImpl(T) : Row {
+			
+			T value;
+			
+			override string toString() {
+				import std.conv;
+				return value.to!string;
+			}
+			
+		}
+		
+	}
 
 	protected enum Type : uint {
 

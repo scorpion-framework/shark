@@ -30,6 +30,8 @@ class Stream(size_t idLength, Endian endianness, size_t length, bool lengthInclu
 		size_t _length;
 	}
 
+	private Buffer _returnBuffer;
+
 	static if(idLength) private void[idLength] _id;
 	
 	static if(usesSequence) private S sequence;
@@ -38,7 +40,7 @@ class Stream(size_t idLength, Endian endianness, size_t length, bool lengthInclu
 		_socket = socket;
 		_recv = new void[buffer];
 		_buffer = new Buffer(buffer);
-		_length = 0;
+		_returnBuffer = new Buffer(buffer);
 	}
 
 	public @property Socket socket() {
@@ -103,10 +105,10 @@ class Stream(size_t idLength, Endian endianness, size_t length, bool lengthInclu
 	}
 	
 	private Buffer readBody() {
-		if(_buffer.data.length >= length) {
-			void[] ret = _buffer.readData(_length);
+		if(_buffer.data.length >= _length) {
+			_returnBuffer.data = _buffer.readData(_length);
 			_length = 0;
-			return new Buffer(ret);
+			return _returnBuffer;
 		} else {
 			receiveImpl();
 			return readBody();

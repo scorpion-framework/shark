@@ -74,7 +74,7 @@ unittest {
 		Integer id1;
 
 		@Id
-		Integer id2;
+		String id2;
 
 		uint value;
 
@@ -108,20 +108,23 @@ unittest {
 		test1.a = 55;
 		test1.b = -1;
 		database.insert(test1);
-		assertThrown!DatabaseException(database.insert(test1)); // variable `b` should be unique
+		assert(test1.testId == 1);
+
+		test1.testId = null;
+		assertThrown!DatabaseException(database.insert(test1)); // `b` is unique
+
 		test1.a = null;
-		test1.b = 0;
-		assertThrown!DatabaseException(database.insert(test1)); // variable `a` cannot be null
+		assertThrown!DatabaseException(database.insert(test1)); // `a` cannot be null
 
 		test1.a = 44;
 		test1.b = 1;
-		database.insert(test1);
+		database.insert(test1, false);
 
 		test1.a = 33;
 		test1.b = 6;
 		database.insert(test1);
 
-		//assert(database.select!Test1().length == 3);
+		assert(database.select!Test1().length == 3);
 
 		test1 = database.selectOne!(["string"], Test1)("test");
 		assert(test1.test == "test");
@@ -167,7 +170,7 @@ unittest {
 
 		Test3 test3 = new Test3();
 		test3.id1 = 1;
-		test3.id2 = 109;
+		test3.id2 = "test";
 		test3.value = int.max;
 		database.insert(test3);
 

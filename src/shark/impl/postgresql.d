@@ -1,10 +1,11 @@
 ﻿module shark.impl.postgresql;
 
+import std.algorithm : canFind;
 import std.conv : to;
 import std.digest : toHexString, LetterCase;
 import std.digest.md : md5Of;
 import std.exception : enforce;
-import std.experimental.logger : trace;
+import std.experimental.logger : trace, info, warning;
 import std.socket;
 import std.string : join;
 import std.system : Endian;
@@ -18,6 +19,8 @@ import xbuffer : Buffer;
 // debug
 import std.stdio;
 
+private enum infoStatement = "_shark_table_info";
+
 private alias PostgresqlStream = Stream!(1, Endian.bigEndian, 4, true);
 
 class PostgresqlDatabase : SqlDatabase {
@@ -28,6 +31,8 @@ class PostgresqlDatabase : SqlDatabase {
 
 	private uint _serverProcessId;
 	private uint _serverSecretKey;
+
+	private bool _error = false;
 
 	public this(string host, ushort port=5432) {
 		Socket socket = new TcpSocket();
@@ -87,92 +92,138 @@ class PostgresqlDatabase : SqlDatabase {
 					break;
 				case 'S':
 					// parameter status
-					_status[buffer.read0String()] = buffer.read0String();
+					_status[buffer.read0String().idup] = buffer.read0String().idup;
 					break;
 				case 'K':
 					// backend key data
 					_serverProcessId = buffer.read!(Endian.bigEndian, uint)();
 					_serverSecretKey = buffer.read!(Endian.bigEndian, uint)();
-					loop = false;
+					//loop = false;
 					break;
 				default:
 					throw new DatabaseConnectionException("Wrong packet sequence");
 			}
 		} while(loop);
+		// prepare a statement for table description
+		//prepareQuery(infoStatement, "select column_name, data_type, is_nullable, character_maximum_length, column_default from INFORMATION_SCHEMA.COLUMNS where table_name=$1;", Param.VARCHAR);
 	}
 
 	private Buffer receive() {
-		Buffer buffer = _stream.receive();
-		if(_stream.id!char[0] == 'E') {
-			PostgresqlDatabaseException[] exceptions;
-			char errorCode;
-			while((errorCode = buffer.read!char()) != '\0') {
-				exceptions ~= new PostgresqlDatabaseException(errorCode, buffer.read0String());
-			}
-			throw new PostgresqlDatabaseExceptions(exceptions);
-		} else if(_stream.id!char[0] == 'Z') {
-			// skip
-			return receive();
-		} else {
-			return buffer;
+		if(_error) {
+			// clear packets received after an exception was thrown and not handled
+			_error = false;
+			string[] ids;
+			do {
+				receive();
+				ids ~= _stream.id!char;
+			} while(_stream.id!char[0] != 'Z');
+			warning("An exception was thrown and ", ids.length, " packet(s) (", ids.join(", "), ") has been skipped");
 		}
+		Buffer buffer = _stream.receive();
+		switch(_stream.id!char[0]) {
+			case 'E':
+				_error = true;
+				PostgresqlDatabaseException[] exceptions;
+				char errorCode;
+				while((errorCode = buffer.read!char()) != '\0') {
+					exceptions ~= new PostgresqlDatabaseException(errorCode, buffer.read0String());
+				}
+				throw new PostgresqlDatabaseExceptions(exceptions);
+			case 'N':
+				string[] notices;
+				char noticeCode;
+				while((noticeCode = buffer.read!char()) != '\0') {
+					notices ~= buffer.read0String();
+				}
+				enforce!DatabaseConnectionException(notices.length >= 3, "Received malformed notice with " ~ notices.length.to!string ~ " fields");
+				info("PostgreSQL (", notices[0], "): ", notices[3]);
+				return receive();
+			default:
+				return buffer;
+		}
+	}
+
+	private void sendFlush() {
+		_stream.id = "H";
+		Buffer buffer = new Buffer(8);
+		buffer.write!(Endian.bigEndian, uint)(4);
+		_stream.send(buffer);
 	}
 
 	// QUERYING
 
-	public override Buffer query(string query) {
+	public override void query(string query) {
 		trace("Running query `" ~ query ~ "`");
 		_stream.id = "Q";
 		Buffer buffer = new Buffer(query.length + 6);
 		buffer.write0String(query);
 		_stream.send(buffer);
-		return receive();
+	}
+
+	public void prepareQuery(string statement, string query, Param[] params...) {
+		trace("Preparing query `" ~ query ~ "`");
+		_stream.id = "P";
+		Buffer buffer = new Buffer(statement.length + query.length + 9 + params.length * 4);
+		buffer.write0String(statement);
+		buffer.write0String(query);
+		buffer.write!(Endian.bigEndian, ushort)(params.length.to!ushort);
+		foreach(param ; params) buffer.write!(Endian.bigEndian, uint)(param);
+		_stream.send(buffer);
+		sendFlush();
+		receive();
+		enforcePacketSequence('1');
 	}
 	
-	public override SelectResult querySelect(string query) {
-		SelectResult result;
-		Buffer buffer = this.query(query);
-		enforcePacketSequence('T');
-		ColumnInfo[] columns;
-		foreach(i ; 0..buffer.read!(Endian.bigEndian, ushort)()) {
-			ColumnInfo column;
-			column.column = buffer.read0String();
-			buffer.readData(6);
-			column.type = buffer.read!(Endian.bigEndian, uint)();
-			buffer.readData(8);
-			columns ~= column;
-			result.columns[column.column] = i;
-		}
-		while(true) {
-			buffer = receive();
-			if(_stream.id!char[0] == 'C') break;
-			enforcePacketSequence('D');
-			enforce!DatabaseConnectionException(buffer.read!(Endian.bigEndian, ushort)() == columns.length, "Length of the row doesn't match the column's");
-			SelectResult.Row[] rows;
-			foreach(column ; columns) {
-				rows ~= {
-					switch(column.type) {
-						case 16: return readString!bool(buffer);
-						case 17: return readString!(ubyte[])(buffer);
-						case 20: return readString!long(buffer);
-						case 21: return readString!short(buffer);
-						case 23: return readString!int(buffer);
-						case 25: return readString!string(buffer);
-						case 700: return readString!float(buffer);
-						case 701: return readString!double(buffer);
-						case 1042: return readString!char(buffer);
-						case 1043: return readString!string(buffer);
-						default: throw new DatabaseConnectionException("Unknwon type with id " ~ column.type.to!string);
-					}
-				}();
+	public override Result querySelect(string query) {
+		Result result;
+		this.query(query);
+		Buffer buffer = receive();
+		if(_stream.id!char[0] != 'C') {
+			enforcePacketSequence('T');
+			ColumnInfo[] columns;
+			foreach(i ; 0..buffer.read!(Endian.bigEndian, ushort)()) {
+				ColumnInfo column;
+				column.column = buffer.read0String().idup;
+				buffer.readData(6);
+				column.type = buffer.read!(Endian.bigEndian, uint)();
+				buffer.readData(8);
+				columns ~= column;
+				result.columns[column.column] = i;
 			}
-			result.rows ~= rows;
+			while(true) {
+				buffer = receive();
+				if(_stream.id!char[0] == 'C') break;
+				enforcePacketSequence('D');
+				enforce!DatabaseConnectionException(buffer.read!(Endian.bigEndian, ushort)() == columns.length, "Length of the row doesn't match the column's");
+				Result.Row[] rows;
+				foreach(column ; columns) {
+					rows ~= parseRow(column.type, buffer);
+				}
+				result.rows ~= rows;
+			}
 		}
+		enforceReadyForQuery();
 		return result;
 	}
 
+	private Result.Row parseRow(uint param, Buffer buffer) {
+		switch(param) with(Param) {
+			case BOOL: return readString!bool(buffer);
+			case BYTEA: return readString!(ubyte[])(buffer);
+			case INT8: return readString!long(buffer);
+			case INT2: return readString!short(buffer);
+			case INT4: return readString!int(buffer);
+			case TEXT: return readString!string(buffer);
+			case FLOAT4: return readString!float(buffer);
+			case FLOAT8: return readString!double(buffer);
+			case CHAR: return readString!char(buffer);
+			case VARCHAR: return readString!string(buffer);
+			default: throw new DatabaseConnectionException("Unknwon type with id " ~ param.to!string);
+		}
+	}
+	
 	private static struct ColumnInfo {
-
+		
 		string column;
 		uint type;
 
@@ -181,15 +232,10 @@ class PostgresqlDatabase : SqlDatabase {
 	// CREATE | ALTER
 
 	protected override TableInfo[string] getTableInfo(string table) {
-		Buffer buffer = query("select column_name, data_type, is_nullable, character_maximum_length, column_default from INFORMATION_SCHEMA.COLUMNS where table_name=" ~ escapeString(table) ~ ";");
-		if(_stream.id!char[0] == 'C') return null;
+		query("select column_name, data_type, is_nullable, character_maximum_length, column_default from INFORMATION_SCHEMA.COLUMNS where table_name=" ~ escapeString(table) ~ ";");
+		Buffer buffer = receive();
 		enforcePacketSequence('T');
 		enforce!DatabaseConnectionException(buffer.read!(Endian.bigEndian, ushort)() == 5, "Wrong number of fields returned by the server");
-		string[] columns;
-		foreach(i ; 0..5) {
-			columns ~= buffer.read0String();
-			buffer.readData(18);
-		}
 		TableInfo[string] ret;
 		while(true) {
 			buffer = receive();
@@ -197,15 +243,16 @@ class PostgresqlDatabase : SqlDatabase {
 			enforcePacketSequence('D');
 			enforce!DatabaseConnectionException(buffer.read!(Endian.bigEndian, ushort)() == 5, "Wrong number of fields returned by the server");
 			TableInfo field;
-			field.name = buffer.read!string(buffer.read!(Endian.bigEndian, uint)());
+			field.name = buffer.read!string(buffer.read!(Endian.bigEndian, uint)()).idup;
 			field.type = fromStringToType(buffer.read!string(buffer.read!(Endian.bigEndian, uint)()));
 			field.nullable = buffer.read!string(buffer.read!(Endian.bigEndian, uint)()) == "YES";
 			immutable length = buffer.read!(Endian.bigEndian, uint)();
-			if(length != uint.max) field.length = to!size_t(buffer.read!string(length));
+			if(length != uint.max) field.length = to!uint(buffer.read!string(length));
 			immutable defaultValue = buffer.read!(Endian.bigEndian, uint)();
-			if(defaultValue != uint.max) field.defaultValue = buffer.read!string(defaultValue);
+			if(defaultValue != uint.max) field.defaultValue = buffer.read!string(defaultValue).idup;
 			ret[field.name] = field;
 		}
+		enforceReadyForQuery();
 		return ret;
 	}
 
@@ -255,6 +302,12 @@ class PostgresqlDatabase : SqlDatabase {
 		}
 	}
 
+	protected override void createTable(string table, string[] fields) {
+		super.createTable(table, fields);
+		receiveAndEnforcePacketSequence('C');
+		enforceReadyForQuery();
+	}
+
 	protected override void alterTableColumn(string table, InitInfo.Field field, bool typeChanged, bool nullableChanged) {
 		string q = "alter table " ~ table ~ " alter column " ~ field.name;
 		if(typeChanged) {
@@ -266,6 +319,74 @@ class PostgresqlDatabase : SqlDatabase {
 			else q ~= " set not null";
 		}
 		query(q ~ ";");
+		receiveAndEnforcePacketSequence('C');
+		enforceReadyForQuery();
+	}
+
+	protected override void alterTableAddColumn(string table, InitInfo.Field field) {
+		super.alterTableAddColumn(table, field);
+		receiveAndEnforcePacketSequence('C');
+		enforceReadyForQuery();
+	}
+
+	protected override void alterTableDropColumn(string table, string column) {
+		super.alterTableDropColumn(table, column);
+		receiveAndEnforcePacketSequence('C');
+		enforceReadyForQuery();
+	}
+
+	// INSERT
+
+	protected override Result insertImpl(InsertInfo insertInfo) {
+		auto ret = super.insertImpl(insertInfo);
+		receiveAndEnforcePacketSequence('C');
+		enforceReadyForQuery();
+		return ret;
+	}
+
+	protected override Result insertInto(string table, string[] names, string[] fields, string[] primaryKeys) {
+		string q = "insert into " ~ table ~ " (" ~ names.join(",") ~ ") values (" ~ fields.join(",") ~ ")";
+		if(primaryKeys.length) q ~= " returning " ~ primaryKeys.join(",");
+		query(q);
+		if(primaryKeys.length) {
+			Result result;
+			Buffer buffer = receive();
+			enforce(buffer.read!(Endian.bigEndian, ushort)() == primaryKeys.length, "Wrong number of fields returned by the server");
+			ColumnInfo[] info;
+			foreach(i ; 0..primaryKeys.length) {
+				ColumnInfo column;
+				column.column = buffer.read0String().idup;
+				buffer.readData(6); // ???
+				column.type = buffer.read!(Endian.bigEndian, uint)();
+				buffer.readData(8); // ???
+				info ~= column;
+				result.columns[column.column] = i;
+			}
+			buffer = receive();
+			enforce(buffer.read!(Endian.bigEndian, ushort)() == primaryKeys.length, "Wrong number of fields returned by the server");
+			Result.Row[] rows;
+			foreach(column ; info) {
+				rows ~= parseRow(column.type, buffer);
+			}
+			result.rows ~= rows;
+			return result;
+		} else {
+			return Result.init;
+		}
+	}
+
+	// DROP
+
+	public override void dropIfExists(string table) {
+		super.dropIfExists(table);
+		receiveAndEnforcePacketSequence('C');
+		enforceReadyForQuery();
+	}
+
+	public override void drop(string table) {
+		super.drop(table);
+		receiveAndEnforcePacketSequence('C');
+		enforceReadyForQuery();
 	}
 
 	// UTILS
@@ -275,22 +396,47 @@ class PostgresqlDatabase : SqlDatabase {
 		if(current != expected) throw new WrongPacketSequenceException(expected, current);
 	}
 
+	private void receiveAndEnforcePacketSequence(char expected) {
+		receive();
+		enforcePacketSequence(expected);
+	}
+
+	private void enforceReadyForQuery() {
+		Buffer buffer = receive();
+		enforcePacketSequence('Z');
+		enforce!DatabaseConnectionException(buffer.data.length == 1 && "ITE".canFind(buffer.read!char()), "Server is not ready for query");
+	}
+
 	protected override string escapeBinary(ubyte[] value) {
 		return "'\\x" ~ toHexString(value) ~ "'";
-		//return "decode('" ~ toHexString(value) ~ "', 'hex')";
+	}
+
+	private enum Param : uint {
+
+		BOOL = 16,
+		BYTEA = 17,
+		INT8 = 20,
+		INT2 = 21,
+		INT4 = 23,
+		TEXT = 25,
+		FLOAT4 = 700,
+		FLOAT8 = 701,
+		CHAR = 1042,
+		VARCHAR = 1043
+
 	}
 	
-	private SelectResult.Row readString(T)(Buffer buffer) {
+	private Result.Row readString(T)(Buffer buffer) {
 		immutable length = buffer.read!(Endian.bigEndian, uint)();
 		if(length == uint.max) return null;
 		else {
+			auto str = buffer.read!string(length).idup;
 			static if(is(T == ubyte[])) {
-				string hex = buffer.read!string(length);
-				assert(hex.length > 4 && hex.length % 2 == 0);
-				return SelectResult.Row.from(fromHexString(hex[2..$]));
+				assert(str.length > 2 && str.length % 2 == 0);
+				return Result.Row.from(fromHexString(str[2..$]));
 			}
-			else static if(is(T == bool)) return SelectResult.Row.from(buffer.read!string(length) == "t");
-			else return SelectResult.Row.from(to!T(buffer.read!string(length)));
+			else static if(is(T == bool)) return Result.Row.from(str == "t");
+			else return Result.Row.from(to!T(str));
 		}
 	}
 

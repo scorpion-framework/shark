@@ -87,9 +87,9 @@ class MysqlDatabase : SqlDatabase {
 	protected override void connectImpl(string db, string user, string password) {
 		Buffer buffer = _stream.receive();
 		enforce!DatabaseConnectionException(buffer.read!ubyte() == 0x0a, "Incompatible protocols");
-		_serverVersion = buffer.read0String();
+		_serverVersion = buffer.read0String().idup;
 		buffer.readData(4); // connection id
-		ubyte[] authPluginData = buffer.read!(ubyte[])(8);
+		ubyte[] authPluginData = buffer.read!(ubyte[])(8).dup;
 		buffer.readData(1); // filler
 		uint capabilities = buffer.read!(Endian.littleEndian, ushort)();
 		buffer.read!ubyte(); // character set
@@ -98,12 +98,12 @@ class MysqlDatabase : SqlDatabase {
 		immutable authPluginDataLength = buffer.read!byte();
 		buffer.readData(10); // reserved
 		if(capabilities & CapabilityFlags.secureConnection) {
-			authPluginData ~= buffer.read!(ubyte[])(max(13, authPluginDataLength - 8));
+			authPluginData ~= buffer.read!(ubyte[])(max(13, authPluginDataLength - 8)).dup;
 			authPluginData = authPluginData[0..$-1]; // remove final 0
 		}
 		string method;
 		if(capabilities & CapabilityFlags.pluginAuth) {
-			method = buffer.read0String();
+			method = buffer.read0String().idup;
 			enforce!DatabaseConnectionException(["mysql_native_password", "caching_sha2_password"].canFind(method), "Unknown hashing method '" ~ method ~ "'");
 		}
 		enforce!DatabaseConnectionException(capabilities & CapabilityFlags.protocol41, "Server does not support protocol v4.1");
@@ -145,7 +145,7 @@ class MysqlDatabase : SqlDatabase {
 		return buffer;
 	}
 
-	public override Buffer query(string query) {
+	public override void query(string query) {
 		trace("Running query `" ~ query ~ "`");
 		Buffer buffer = new Buffer(query.length + 5);
 		buffer.write(ubyte(3));
@@ -154,11 +154,10 @@ class MysqlDatabase : SqlDatabase {
 		_stream.send(buffer);
 		buffer = receive();
 		buffer.data.writeln;
-		return buffer;
 		//return receive();
 	}
 
-	public override SelectResult querySelect(string query) {
+	public override Result querySelect(string query) {
 		throw new Exception("Not implemented");
 	}
 
@@ -196,6 +195,10 @@ class MysqlDatabase : SqlDatabase {
 	
 	protected override void alterTableColumn(string table, InitInfo.Field field, bool typeChanged, bool nullableChanged) {
 		query("alter table " ~ table ~ " modify column " ~ generateField(field) ~ ";");
+	}
+
+	protected override Result insertInto(string table, string[] names, string[] fields, string[] primaryKeys) {
+		throw new Exception("Not implemented");
 	}
 
 	protected override string escapeBinary(ubyte[] value) {
