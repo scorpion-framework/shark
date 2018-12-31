@@ -134,7 +134,7 @@ class MysqlDatabase : SqlDatabase {
 		return cast(string)res;
 	}
 
-	public override void close() {
+	protected override void closeImpl() {
 		_stream.socket.close();
 	}
 	

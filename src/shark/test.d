@@ -203,6 +203,9 @@ unittest {
 		assert(test3.id2 == "test");
 		assert(test3.value == 12);
 
+		database.del(test3);
+		assert(database.select!Test3().length == 0);
+
 		database.drop("test");
 		database.init!Test4();
 

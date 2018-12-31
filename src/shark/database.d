@@ -15,24 +15,43 @@ import std.stdio : writeln;
  */
 class Database {
 
-	private string _db;
-	
-	public @property string db() {
-		return _db;
-	}
-	
-	protected abstract void connectImpl(string db, string user, string password);
-	
+	private string _db = null;
+
+	/**
+	 * Performs authentication and connect to a database.
+	 * It is possible to reconnect using the same object by calling
+	 * `close` and then `connect` again.
+	 */
 	public void connect(string db, string user, string password="") {
 		_db = db;
 		this.connectImpl(db, user, password);
 	}
 
+	/// ditto
 	public void connect(string password="") {
 		this.connect(null, "", password);
 	}
+	
+	protected abstract void connectImpl(string db, string user, string password);
 
-	public abstract void close();
+	/**
+	 * Indicates the name of the database opened or null
+	 * if the database isn't connected.
+	 */
+	public @property string db() {
+		return _db;
+	}
+
+	/**
+	 * Closes the connection with the database.
+	 * Should only be called after `connect`.
+	 */
+	public void close() {
+		closeImpl();
+		_db = null;
+	}
+
+	protected abstract void closeImpl();
 
 	// INIT
 	
@@ -237,15 +256,7 @@ class Database {
 	}
 
 	private T selectIdImpl(string[] fields, T:Entity)(T entity, Select select=Select.init) if(getEntityPrimaryKeys!T.length) {
-		Clause.Where.GenericStatement[] statements;
-		static foreach(immutable member ; getEntityPrimaryKeys!T) {
-			statements ~= new Clause.Where.Statement(memberName!(T, member), Clause.Where.Operator.equals, mixin("entity." ~ member));
-		}
-		select.where.statement = statements[0];
-		foreach(statement ; statements[1..$]) {
-			select.where.statement = new Clause.Where.ComplexStatement(select.where.statement, Clause.Where.Glue.and, statement);
-		}
-		return selectOne!(fields, T)(select);
+		return selectOne!(fields, T)(Select(makeWhereFromPrimaryKeys(entity)));
 	}
 
 	protected abstract Result selectImpl(SelectInfo, Select);
@@ -317,7 +328,7 @@ class Database {
 	// UPDATE
 
 	/**
-	 * Updates a table.
+	 * Updates one or more table fields.
 	 * The given fields should correspond to the ones in the entity class,
 	 * not to the ones in the database.
 	 */
@@ -340,16 +351,7 @@ class Database {
 	 * primary key(s).
 	 */
 	public void update(string[] fields, T:Entity)(T entity) if(getEntityPrimaryKeys!T.length) {
-		Clause.Where where;
-		Clause.Where.GenericStatement[] statements;
-		static foreach(immutable member ; getEntityPrimaryKeys!T) {
-			statements ~= new Clause.Where.Statement(memberName!(T, member), Clause.Where.Operator.equals, mixin("entity." ~ member));
-		}
-		where.statement = statements[0];
-		foreach(statement ; statements[1..$]) {
-			where.statement = new Clause.Where.ComplexStatement(where.statement, Clause.Where.Glue.and, statement);
-		}
-		update!(fields, T)(entity, where);
+		update!(fields, T)(entity, makeWhereFromPrimaryKeys(entity));
 	}
 
 	/// ditto
@@ -375,9 +377,26 @@ class Database {
 
 	// DELETE
 
-	public void del(string table, Clause.Where where) {}
-	
-	public void del(T:Entity)(T entity) {}
+	/**
+	 * Deletes row from a table.
+	 */
+	public void del(string table, Clause.Where where) {
+		deleteImpl(table, where);
+	}
+
+	/**
+	 * Deletes zero or one row using the entity's primary
+	 * key(s).
+	 * Example:
+	 * ---
+	 * database.del(test);
+	 * ---
+	 */
+	public void del(T:Entity)(T entity) if(getEntityPrimaryKeys!T.length) {
+		del(entity.tableName, makeWhereFromPrimaryKeys(entity));
+	}
+
+	protected abstract void deleteImpl(string, Clause.Where);
 
 	// DROP
 
@@ -386,6 +405,19 @@ class Database {
 	public abstract void drop(string table);
 
 	// UTILS
+
+	private Clause.Where makeWhereFromPrimaryKeys(T)(T entity) if(getEntityPrimaryKeys!T.length) {
+		Clause.Where where;
+		Clause.Where.GenericStatement[] statements;
+		static foreach(immutable member ; getEntityPrimaryKeys!T) {
+			statements ~= new Clause.Where.Statement(memberName!(T, member), Clause.Where.Operator.equals, mixin("entity." ~ member));
+		}
+		where.statement = statements[0];
+		foreach(statement ; statements[1..$]) {
+			where.statement = new Clause.Where.ComplexStatement(where.statement, Clause.Where.Glue.and, statement);
+		}
+		return where;
+	}
 
 	/**
 	 * Clauses for select, update and delete.

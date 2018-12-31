@@ -2,6 +2,7 @@
 
 import std.conv : to;
 import std.exception : enforce;
+import std.experimental.logger : warning;
 import std.string : join;
 
 import shark.database;
@@ -13,7 +14,9 @@ import xbuffer : Buffer;
 import std.stdio;
 
 /**
- * Generic SQL database.
+ * Generic SQL database. It is possible to execute queries and
+ * select queries.
+ * See specific implementations for more complex operations.
  */
 abstract class SqlDatabase : Database {
 
@@ -30,6 +33,7 @@ abstract class SqlDatabase : Database {
 	/**
 	 * Runs a select query and returns the result. This method
 	 * does not break the flow of the protocol like `query` does.
+	 * This method is intended for usage with complex queries.
 	 * Example:
 	 * ---
 	 * auto result = database.querySelect("select * from test order by rand() limit 1");
@@ -158,6 +162,16 @@ abstract class SqlDatabase : Database {
 		}
 		string q = "update " ~ updateInfo.tableName ~ " set " ~ sets.join(",");
 		if(where.statement !is null) q ~= " where " ~ stringifyStatements(where.statement);
+		else warning("Where statement is empty! Updating the whole table!");
+		query(q ~ ";");
+	}
+
+	// DELETE
+
+	protected override void deleteImpl(string table, Clause.Where where) {
+		string q = "delete from " ~ table;
+		if(where.statement !is null) q ~= " where " ~ stringifyStatements(where.statement);
+		else warning("Where statement is empty! Deleting the whole table!");
 		query(q ~ ";");
 	}
 

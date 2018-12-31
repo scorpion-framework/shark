@@ -23,6 +23,9 @@ private enum infoStatement = "_shark_table_info";
 
 private alias PostgresqlStream = Stream!(1, Endian.bigEndian, 4, true);
 
+/**
+ * PostgreSQL database implementation.
+ */
 class PostgresqlDatabase : SqlDatabase {
 
 	private PostgresqlStream _stream;
@@ -108,7 +111,7 @@ class PostgresqlDatabase : SqlDatabase {
 		prepareQuery(infoStatement, "select column_name, data_type, is_nullable, character_maximum_length, column_default from INFORMATION_SCHEMA.COLUMNS where table_name=$1;", Param.VARCHAR);
 	}
 	
-	public override void close() {
+	protected override void closeImpl() {
 		_stream.socket.close();
 	}
 
@@ -437,6 +440,14 @@ class PostgresqlDatabase : SqlDatabase {
 
 	protected override void updateImpl(UpdateInfo updateInfo, Clause.Where where) {
 		super.updateImpl(updateInfo, where);
+		receiveAndEnforcePacketSequence('C');
+		enforceReadyForQuery();
+	}
+
+	// DELETE
+
+	protected override void deleteImpl(string table, Clause.Where where) {
+		super.deleteImpl(table, where);
 		receiveAndEnforcePacketSequence('C');
 		enforceReadyForQuery();
 	}
