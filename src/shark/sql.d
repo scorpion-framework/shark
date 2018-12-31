@@ -1,6 +1,7 @@
 ﻿module shark.sql;
 
 import std.conv : to;
+static import std.datetime;
 import std.exception : enforce;
 import std.experimental.logger : warning;
 import std.string : join;
@@ -223,6 +224,18 @@ abstract class SqlDatabase : Database {
 	protected override string escapeString(string value) {
 		import std.string : replace;
 		return "'" ~ value.replace("'", "''") ~ "'";
+	}
+
+	protected override string escapeDate(std.datetime.Date value) {
+		return "'" ~ value.toISOExtString() ~ "'";
+	}
+
+	protected override string escapeDateTime(std.datetime.DateTime value) {
+		return "'" ~ value.toISOExtString() ~ "'";
+	}
+
+	protected override string escapeTime(std.datetime.TimeOfDay value) {
+		return "'" ~ value.toISOExtString() ~ "'";
 	}
 
 	/**

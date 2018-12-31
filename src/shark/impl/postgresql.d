@@ -2,12 +2,13 @@
 
 import std.algorithm : canFind;
 import std.conv : to;
+static import std.datetime;
 import std.digest : toHexString, LetterCase;
 import std.digest.md : md5Of;
 import std.exception : enforce;
 import std.experimental.logger : trace, info, warning;
 import std.socket;
-import std.string : join;
+import std.string : join, replace;
 import std.system : Endian;
 
 import shark.database : DatabaseException, DatabaseConnectionException, ErrorCodeDatabaseException, ErrorCodesDatabaseException;
@@ -215,6 +216,9 @@ class PostgresqlDatabase : SqlDatabase {
 					case CHAR:
 					case STRING:
 					case CLOB:
+					case DATE:
+					case DATETIME:
+					case TIME:
 						writeImpl(param.to!string);
 						break;
 					case BINARY:
@@ -282,6 +286,9 @@ class PostgresqlDatabase : SqlDatabase {
 			case FLOAT8: return readString!double(buffer);
 			case CHAR: return readString!char(buffer);
 			case VARCHAR: return readString!string(buffer);
+			case DATE: return readString!(std.datetime.Date)(buffer);
+			case TIMESTAMP: return readString!(std.datetime.DateTime)(buffer);
+			case TIME: return readString!(std.datetime.TimeOfDay)(buffer);
 			default: throw new DatabaseConnectionException("Unknwon type with id " ~ param.to!string);
 		}
 	}
@@ -329,6 +336,9 @@ class PostgresqlDatabase : SqlDatabase {
 			case "character varying": return STRING;
 			case "bytea": return BINARY | BLOB;
 			case "text": return CLOB;
+			case "date": return DATE;
+			case "timestamp": return DATETIME;
+			case "time": return TIME;
 			default: throw new DatabaseException("Unknown type '" ~ str ~ "'");
 		}
 	}
@@ -360,6 +370,9 @@ class PostgresqlDatabase : SqlDatabase {
 				length = 0; // bytea(x) not supported
 				return "bytea";
 			case CLOB: return "text";
+			case DATE: return "date";
+			case DATETIME: return "timestamp";
+			case TIME: return "time";
 		}
 	}
 
@@ -503,7 +516,10 @@ class PostgresqlDatabase : SqlDatabase {
 		FLOAT4 = 700,
 		FLOAT8 = 701,
 		CHAR = 1042,
-		VARCHAR = 1043
+		VARCHAR = 1043,
+		DATE = 1082,
+		TIME = 1083,
+		TIMESTAMP = 1114,
 
 	}
 	
@@ -515,9 +531,17 @@ class PostgresqlDatabase : SqlDatabase {
 			static if(is(T == ubyte[])) {
 				assert(str.length > 2 && str.length % 2 == 0);
 				return Result.Row.from(fromHexString(str[2..$]));
+			} else static if(is(T == std.datetime.Date)) {
+				return Result.Row.from(std.datetime.Date.fromISOExtString(str));
+			} else static if(is(T == std.datetime.DateTime)) {
+				return Result.Row.from(std.datetime.DateTime.fromISOExtString(str.replace(" ", "T")));
+			} else static if(is(T == std.datetime.TimeOfDay)) {
+				return Result.Row.from(std.datetime.TimeOfDay.fromISOExtString(str));
+			} else static if(is(T == bool)) {
+				return Result.Row.from(str == "t");
+			} else {
+				return Result.Row.from(to!T(str));
 			}
-			else static if(is(T == bool)) return Result.Row.from(str == "t");
-			else return Result.Row.from(to!T(str));
 		}
 	}
 

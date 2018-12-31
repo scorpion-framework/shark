@@ -193,6 +193,9 @@ class MysqlDatabase : SqlDatabase {
 			case BINARY: return "binary";
 			case CLOB: return "clob";
 			case BLOB: return "blob";
+			case DATE: return "date";
+			case DATETIME: return "datetime";
+			case TIME: return "time";
 		}
 	}
 	

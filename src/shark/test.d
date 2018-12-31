@@ -21,7 +21,7 @@ unittest {
 
 	static class Test0 : Test {
 
-		@Id
+		@PrimaryKey
 		@AutoIncrement
 		Integer testId;
 
@@ -70,15 +70,21 @@ unittest {
 
 		Blob n;
 
+		Date o;
+
+		DateTime p;
+
+		Time q;
+
 	}
 
 	// table with composite primary key
 	static class Test3 : Test {
 
-		@Id
+		@PrimaryKey
 		Integer id1;
 
-		@Id
+		@PrimaryKey
 		String id2;
 
 		uint value;
@@ -168,6 +174,9 @@ unittest {
 		test2.l = [0, 1, 2, 55];
 		test2.m = "___________________";
 		test2.n = [0, 0, 0, 0, 0, 0, 0];
+		test2.o = Date(2018, 12, 31);
+		test2.p = DateTime(2019, 1, 1, 0, 27, 43);
+		test2.q = Time(0, 36, 12);
 		database.insert(test2);
 
 		Test2[] test2s = database.select!Test2();
@@ -185,6 +194,9 @@ unittest {
 		assert(test2.l == [0, 1, 2, 55]);
 		assert(test2.m == "___________________");
 		assert(test2.n == [0, 0, 0, 0, 0, 0, 0]);
+		assert(test2.o == Date(2018, 12, 31));
+		assert(test2.p == DateTime(2019, 1, 1, 0, 27, 43));
+		assert(test2.q == Time(0, 36, 12));
 
 		database.drop("test");
 		database.init!Test3();

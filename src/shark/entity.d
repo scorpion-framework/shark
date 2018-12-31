@@ -1,7 +1,15 @@
 module shark.entity;
 
+static import std.datetime;
+
+/**
+ * Base interface that every entity should implement.
+ */
 interface Entity {
 
+	/**
+	 * Gets the entity's table name.
+	 */
 	public @property string tableName();
 
 }
@@ -10,6 +18,11 @@ struct Nullable(T, ubyte id=0) if(!is(T : Object)) {
 
 	private bool _isNull = true;
 	private T _value;
+
+	this(E...)(E args) {
+		_isNull = false;
+		_value = T(args);
+	}
 	
 	public @property bool isNull() {
 		return _isNull;
@@ -67,11 +80,15 @@ alias Clob = Nullable!(string, 1);
 
 alias Blob = Nullable!(ubyte[], 1);
 
+alias Date = Nullable!(std.datetime.Date);
+
+alias DateTime = Nullable!(std.datetime.DateTime);
+
+alias Time = Nullable!(std.datetime.TimeOfDay);
+
 struct Name { string name; }
 
 enum PrimaryKey;
-
-alias Id = PrimaryKey;
 
 enum AutoIncrement;
 

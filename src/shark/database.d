@@ -1,6 +1,7 @@
 module shark.database;
 
 import std.conv : to;
+static import std.datetime;
 import std.string : join;
 import std.traits : hasUDA, getUDAs;
 
@@ -96,8 +97,10 @@ class Database {
 				field.type = memberType!(typeof(__traits(getMember, T, member)));
 				field.nullable = memberNullable!(typeof(__traits(getMember, T, member)));
 				foreach(uda ; __traits(getAttributes, __traits(getMember, T, member))) {
-					static if(is(uda == PrimaryKey)) ret.primaryKeys ~= field.name;
-					else static if(is(uda == AutoIncrement)) {
+					static if(is(uda == PrimaryKey)) {
+						ret.primaryKeys ~= field.name;
+						field.nullable = false;
+					} else static if(is(uda == AutoIncrement)) {
 						field.autoIncrement = true;
 						field.nullable = false;
 					}
@@ -139,6 +142,10 @@ class Database {
 	 * Clauses for select.
 	 * It is possible to instantiate the struct with the parameters
 	 * in any order.
+	 * Example:
+	 * ---
+	 * Select(Clause.OrderBy.random, Clause.Limit(12));
+	 * ---
 	 */
 	public static struct Select {
 
@@ -268,8 +275,6 @@ class Database {
 
 	}
 
-	deprecated alias SelectResult = Result;
-
 	// INSERT
 	
 	/**
@@ -385,8 +390,7 @@ class Database {
 	}
 
 	/**
-	 * Deletes zero or one row using the entity's primary
-	 * key(s).
+	 * Deletes zero or one row using the entity's primary key(s).
 	 * Example:
 	 * ---
 	 * database.del(test);
@@ -400,13 +404,20 @@ class Database {
 
 	// DROP
 
+	/**
+	 * Deletes a table if exists.
+	 */
 	public abstract void dropIfExists(string table);
 
+	/**
+	 * Deletes a table. May throw an exception if the table
+	 * does not exist.
+	 */
 	public abstract void drop(string table);
 
 	// UTILS
 
-	private Clause.Where makeWhereFromPrimaryKeys(T)(T entity) if(getEntityPrimaryKeys!T.length) {
+	private static Clause.Where makeWhereFromPrimaryKeys(T)(T entity) if(getEntityPrimaryKeys!T.length) {
 		Clause.Where where;
 		Clause.Where.GenericStatement[] statements;
 		static foreach(immutable member ; getEntityPrimaryKeys!T) {
@@ -539,6 +550,9 @@ class Database {
 		 */
 		static struct Order {
 
+			/**
+			 * Random order.
+			 */
 			enum random = { Order order; order.rand=true; return order; }();
 
 			bool rand = false;
@@ -570,6 +584,11 @@ class Database {
 		 * Indicates the limit of rows to be returned. It can be single
 		 * using the 1-field constructor or complex (lower and upper limit)
 		 * using the 2-field constrcutor.
+		 * Example:
+		 * ---
+		 * Limit(1);
+		 * Limit(10, 20);
+		 * ---
 		 */
 		static struct Limit {
 			
@@ -629,7 +648,7 @@ class Database {
 		 * Applies the result of one row to entity, passed by reference.
 		 * The entitty doesn't have to extend `Entity`.
 		 */
-		void apply(T)(ref T entity, Row[] row) {
+		public void apply(T)(ref T entity, Row[] row) {
 			static foreach(immutable member ; getEntityMembers!T) {
 				{
 					auto ptr = memberName!(T, member) in columns;
@@ -660,6 +679,12 @@ class Database {
 								auto value = cast(Result.RowImpl!string)v;
 							} else static if(is(R == Binary) || is(R == Blob) || is(R == ubyte[])) {
 								auto value = cast(Result.RowImpl!(ubyte[]))v;
+							} else static if(is(R == Date) || is(R == std.datetime.Date)) {
+								auto value = cast(Result.RowImpl!(std.datetime.Date))v;
+							} else static if(is(R == DateTime) || is(R == std.datetime.DateTime)) {
+								auto value = cast(Result.RowImpl!(std.datetime.DateTime))v;
+							} else static if(is(R == Time) || is(R == std.datetime.TimeOfDay)) {
+								auto value = cast(Result.RowImpl!(std.datetime.TimeOfDay))v;
 							}
 							if(value is null) throw new DatabaseException("Could not cast " ~ row[*ptr].toString() ~ " to " ~ R.stringof);
 							mixin("entity." ~ member) = value.value;
@@ -706,6 +731,9 @@ class Database {
 		BINARY = 1 << 9,
 		CLOB = 1 << 10,
 		BLOB = 1 << 11,
+		DATE = 1 << 12,
+		DATETIME = 1 << 13,
+		TIME = 1 << 14,
 
 	}
 	
@@ -716,6 +744,12 @@ class Database {
 			return escapeString(value);
 		} else static if(is(T == Binary) || is(T == Blob) || is(T : ubyte[])) {
 			return escapeBinary(value);
+		} else static if(is(T == Date) || is(T == std.datetime.Date)) {
+			return escapeDate(value);
+		} else static if(is(T == DateTime) || is(T == std.datetime.DateTime)) {
+			return escapeDateTime(value);
+		} else static if(is(T == Time) || is(T == std.datetime.TimeOfDay)) {
+			return escapeTime(value);
 		} else static if(is(T : Nullable!R, R)) {
 			if(value.isNull) return "null";
 			else return value.value.to!string;
@@ -727,6 +761,12 @@ class Database {
 	protected abstract string escapeString(string);
 
 	protected abstract string escapeBinary(ubyte[]);
+
+	protected abstract string escapeDate(std.datetime.Date);
+
+	protected abstract string escapeDateTime(std.datetime.DateTime);
+
+	protected abstract string escapeTime(std.datetime.TimeOfDay);
 
 }
 
@@ -818,6 +858,12 @@ private Database.Type memberType(T)() {
 			return STRING;
 		} else static if(is(T == Binary) || is(T : ubyte[])) {
 			return BINARY;
+		} else static if(is(T == Date) || is(T == std.datetime.Date)) {
+			return DATE;
+		} else static if(is(T == DateTime) || is(T == std.datetime.DateTime)) {
+			return DATETIME;
+		} else static if(is(T == Time) || is(T == std.datetime.TimeOfDay)) {
+			return TIME;
 		} else {
 			static assert(0, "Member of type " ~ T.stringof ~ " is not valid");
 		}
@@ -827,11 +873,6 @@ private Database.Type memberType(T)() {
 private bool memberNullable(T)() {
 	static if(is(T : Nullable!R, R)) return true;
 	else return false;
-	/*static if(is(T == bool) || is(T == byte) || is(T == ubyte) || is(T == short) || is(T == ushort) || is(T == int) || is(T == uint) || is(T == long) || is(T == ulong) || is(T == float) || is(T == double) || is(T == char)) {
-		return false;
-	} else {
-		return true;
-	}*/
 }
 
 private string[] getEntityMembers(T:Entity)() {
@@ -890,7 +931,7 @@ class ErrorCodeDatabaseException(string dbname, T) : DatabaseException {
 
 }
 
-class ErrorCodesDatabaseException(T) : DatabaseException {
+class ErrorCodesDatabaseException(T:Exception) : DatabaseException {
 
 	private T[] _errors;
 
