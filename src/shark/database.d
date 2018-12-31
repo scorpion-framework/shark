@@ -116,51 +116,136 @@ class Database {
 
 	// SELECT
 
+	/**
+	 * Clauses for select.
+	 * It is possible to instantiate the struct with the parameters
+	 * in any order.
+	 */
 	public static struct Select {
 
-		Where where;
+		Clause.Where where;
 		
-		Order order;
+		Clause.Order order;
 
-		size_t limit = 0;
+		Clause.Limit limit;
 
-		static struct Where {
-
-
-
+		// calling this because of a bug in the default constructor
+		private void set(Clause.Where where, Clause.Order order, Clause.Limit limit) {
+			this.where = where;
+			this.order = order;
+			this.limit = limit;
 		}
 
-		static class Order {
+		this(Clause.Where where, Clause.Order=Clause.Order.init, Clause.Limit=Clause.Limit.init) {
+			set(where, order, limit);
+		}
 
+		this(Clause.Where where, Clause.Limit limit, Clause.Order=Clause.Order.init) {
+			set(where, order, limit);
+		}
 
+		this(Clause.Order order, Clause.Where=Clause.Where.init, Clause.Limit=Clause.Limit.init) {
+			set(where, order, limit);
+		}
 
+		this(Clause.Order order, Clause.Limit limit, Clause.Where=Clause.Where.init) {
+			set(where, order, limit);
+		}
+
+		this(Clause.Limit limit, Clause.Where where, Clause.Order=Clause.Order.init) {
+			set(where, order, limit);
+		}
+
+		this(Clause.Limit limit, Clause.Order order, Clause.Where=Clause.Where.init) {
+			set(where, order, limit);
 		}
 
 	}
 
-	public T[] select(string[] fields, T:Entity, E...)(E args, Select select=Select.init) {
+	/**
+	 * Selects entities from the database using the optional given clauses.
+	 * The name of the fields should correspond to the name of the entity's
+	 * fields in the database, not to the ones in the D program.
+	 * Example:
+	 * ---
+	 * database.select!(["a", "b"], Test)();
+	 * database.select!("testId", Test)();
+	 * database.select!Test(Database.Select(Database.Select.Limit(10)));
+	 * ---
+	 */
+	public T[] select(string[] fields, T:Entity)(Select select=Select.init) {
+		return selectImpl!(fields, T)(select);
+	}
+
+	/// ditto
+	public T[] select(string field, T:Entity)(Select select=Select.init) {
+		return selectImpl!([field], T)(select);
+	}
+
+	/// ditto
+	public T[] select(T:Entity)(Select select=Select.init) {
+		return selectImpl!([], T)(select);
+	}
+
+	private T[] selectImpl(string[] fields, T:Entity)(Select select=Select.init) {
 		SelectInfo selectInfo;
 		selectInfo.tableName = new T().tableName;
+		//static foreach(field ; fields) selectInfo.fields ~= memberName!(T, field);
 		selectInfo.fields = fields;
-		Result result = selectImpl(selectInfo, select);
-		T[] ret;
-		foreach(row ; result.rows) {
-			T entity = new T();
-			result.apply(entity, row);
-			ret ~= entity;
-		}
-		return ret;
+		return selectImpl(selectInfo, select).bind!T();
 	}
 
-	public T[] select(T:Entity)(Select select=Select.init) {
-		return this.select!([], T)("", select);
+	/**
+	 * Selects one entity from the database.
+	 */
+	public T selectOne(string[] fields, T:Entity)(Select select=Select.init) {
+		return selectOneImpl!(fields, T)(select);
 	}
 
-	public T selectOne(string[] fields, T:Entity, E...)(E args, Select select=Select.init) {
-		select.limit = 1;
-		T[] ret = this.select!(fields, T, E)(args, select);
+	/// ditto
+	public T selectOne(string field, T:Entity)(Select select=Select.init) {
+		return selectOneImpl!([field], T)(select);
+	}
+
+	/// ditto
+	public T selectOne(T:Entity)(Select select=Select.init) {
+		return selectOneImpl!([], T)(select);
+	}
+
+	private T selectOneImpl(string[] fields, T:Entity)(Select select=Select.init) {
+		select.limit = Clause.Limit(1);
+		T[] ret = this.select!(fields, T)(select);
 		if(ret.length) return ret[0];
 		else return null;
+	}
+
+	/**
+	 * Selects an entity from its primary key(s).
+	 */
+	public T selectId(string[] fields, T:Entity)(T entity, Select select=Select.init) if(getEntityPrimaryKeys!T.length) {
+		return selectIdImpl!(fields, T)(entity, select);
+	}
+
+	/// ditto
+	public T selectId(string field, T:Entity)(T entity, Select select=Select.init) if(getEntityPrimaryKeys!T.length) {
+		return selectIdImpl!([field], T)(entity, select);
+	}
+
+	/// ditto
+	public T selectId(T:Entity)(T entity, Select select=Select.init) if(getEntityPrimaryKeys!T.length) {
+		return selectIdImpl!([], T)(entity, select);
+	}
+
+	private T selectIdImpl(string[] fields, T:Entity)(T entity, Select select=Select.init) if(getEntityPrimaryKeys!T.length) {
+		Clause.Where.GenericStatement[] statements;
+		static foreach(immutable member ; getEntityPrimaryKeys!T) {
+			statements ~= new Clause.Where.Statement(memberName!(T, member), Clause.Where.Operator.equals, mixin("entity." ~ member));
+		}
+		select.where.statement = statements[0];
+		foreach(statement ; statements[1..$]) {
+			select.where.statement = new Clause.Where.ComplexStatement(select.where.statement, Clause.Where.Glue.and, statement);
+		}
+		return selectOne!(fields, T)(select);
 	}
 
 	protected abstract Result selectImpl(SelectInfo, Select);
@@ -230,18 +315,69 @@ class Database {
 	}
 
 	// UPDATE
-	
-	public void update(string[] fields, string[] where, T:Entity)(T entity) {
+
+	/**
+	 * Updates a table.
+	 * The given fields should correspond to the ones in the entity class,
+	 * not to the ones in the database.
+	 */
+	public void update(string[] fields, T:Entity)(T entity, Clause.Where where) if(fields.length) {
+		UpdateInfo updateInfo;
+		updateInfo.tableName = entity.tableName;
+		static foreach(field ; fields) {
+			updateInfo.fields ~= UpdateInfo.Field(memberName!(T, field), escape(mixin("entity." ~ field)));
+		}
+		updateImpl(updateInfo, where);
+	}
+
+	/// ditto
+	public void update(string field, T:Entity)(T entity, Clause.Where where) {
+		return update!([field], T)(entity, where);
+	}
+
+	/**
+	 * Updates a single row of a table searching by the entity's
+	 * primary key(s).
+	 */
+	public void update(string[] fields, T:Entity)(T entity) if(getEntityPrimaryKeys!T.length) {
+		Clause.Where where;
+		Clause.Where.GenericStatement[] statements;
+		static foreach(immutable member ; getEntityPrimaryKeys!T) {
+			statements ~= new Clause.Where.Statement(memberName!(T, member), Clause.Where.Operator.equals, mixin("entity." ~ member));
+		}
+		where.statement = statements[0];
+		foreach(statement ; statements[1..$]) {
+			where.statement = new Clause.Where.ComplexStatement(where.statement, Clause.Where.Glue.and, statement);
+		}
+		update!(fields, T)(entity, where);
+	}
+
+	/// ditto
+	public void update(string field, T:Entity)(T entity) if(getEntityPrimaryKeys!T.length) {
+		return update!([field], T)(entity);
+	}
+
+	protected abstract void updateImpl(UpdateInfo, Clause.Where);
+
+	protected static struct UpdateInfo {
+
+		string tableName;
+		Field[] fields;
+
+		static struct Field {
+
+			string name;
+			string value;
+
+		}
 
 	}
+
+	// DELETE
+
+	public void del(string table, Clause.Where where) {}
 	
-	public void update(string[] fields, T:Entity)(T entity) {
-		return update!(fields, [getEntityId!T], T)(entity);
-	}
-	
-	public void update(T:Entity)(T entity) {
-		return update!(getEntityMembers!T, T)(entity);
-	}
+	public void del(T:Entity)(T entity) {}
 
 	// DROP
 
@@ -250,13 +386,217 @@ class Database {
 	public abstract void drop(string table);
 
 	// UTILS
-	
+
+	/**
+	 * Clauses for select, update and delete.
+	 */
+	public static struct Clause {
+
+		@disable this();
+
+		/**
+		 * Where clause.
+		 */
+		static struct Where {
+
+			static interface GenericStatement {}
+
+			static class Statement : GenericStatement {
+
+				string field;
+
+				Operator operator;
+
+				string value;
+
+				bool needsEscaping;
+
+				this(T)(string field, Operator operator, T value) {
+					this.field = field;
+					this.operator = operator;
+					this.value = value.to!string;
+					static if(is(T : string)) needsEscaping = true;
+				}
+
+				this(T)(string field, string operator, T value) {
+					this(field, fromString(operator), value);
+				}
+
+				private Operator fromString(string operator) {
+					switch(operator) with(Operator) {
+						case "=": case "==": return equals;
+						case "!=": return notEquals;
+						case ">": return greaterThan;
+						case ">=": return greaterThanOrEquals;
+						case "<": return lessThan;
+						case "<=": return lessThanOrEquals;
+						default: throw new Exception("Unknown operator " ~ operator);
+					}
+				}
+
+			}
+
+			static class ComplexStatement : GenericStatement {
+
+				GenericStatement leftStatement;
+
+				Glue glue;
+
+				GenericStatement rightStatement;
+
+				this(GenericStatement leftStatement, Glue glue, GenericStatement rightStatement) {
+					this.leftStatement = leftStatement;
+					this.glue = glue;
+					this.rightStatement = rightStatement;
+				}
+
+			}
+
+			enum Operator {
+
+				isNull,
+				equals,
+				notEquals,
+				greaterThan,
+				greaterThanOrEquals,
+				lessThan,
+				lessThanOrEquals,
+
+			}
+
+			enum Glue {
+
+				and,
+				or
+
+			}
+			
+			GenericStatement statement;
+
+			/+/**
+			 * Constructs a where clause from a string.
+			 * Note that this function does not parse a SQL where clause
+			 * but a proprietary one.
+			 */
+			static Where fromString(E...)(string str, E args) {
+				//import std.regex : ctRegex;
+				//enum regex = ctRegex!`\(([^\(\)]*)\)`;
+				Statement[] ret;
+
+				return Where(ret);
+			}
+
+			///
+			unittest {
+
+				Where.fromString("a > 50");
+				Where.fromString("a == b");
+				Where.fromString("(a > 50 or b < 50) and c == 'test'");
+				Where.fromString("a > b and (c is null or (c >= d or e != f))");
+
+			}+/
+			
+		}
+
+		/**
+		 * Order clause.
+		 * Example:
+		 * ---
+		 * Order(Order.Field("a", Order.Field.desc), Order.Field("b", Order.Field.asc));
+		 * ---
+		 */
+		static struct Order {
+
+			enum random = { Order order; order.rand=true; return order; }();
+
+			bool rand = false;
+
+			Field[] fields;
+
+			this(Field[] fields...) {
+				this.fields = fields;
+			}
+
+			this(string[] fields...) {
+				foreach(field ; fields) this.fields ~= Field(field);
+			}
+
+			static struct Field {
+
+				enum asc = true;
+				enum desc = false;
+
+				string name;
+
+				bool _asc = true;
+
+			}
+			
+		}
+
+		/**
+		 * Indicates the limit of rows to be returned. It can be single
+		 * using the 1-field constructor or complex (lower and upper limit)
+		 * using the 2-field constrcutor.
+		 */
+		static struct Limit {
+			
+			size_t lower, upper;
+			
+			this(size_t lower, size_t upper) {
+				assert(lower < upper);
+				this.lower = lower;
+				this.upper = upper;
+			}
+			
+			this(size_t limit) {
+				this(0, limit);
+			}
+			
+		}
+
+	}
+
+	/**
+	 * Result of a select query.
+	 */
 	public static struct Result {
 		
 		size_t[string] columns; // position in the array of the column
 		
 		Row[][] rows;
 
+		/**
+		 * Creates n objects from the result. T doesn't have to
+		 * extend `Entity`.
+		 * Example:
+		 * ---
+		 * class Test {
+		 * 
+		 *    String a;
+		 * 
+		 *    Integer b;
+		 * 
+		 * }
+		 * ...
+		 * Test[] entities = result.bind!Test();
+		 * ---
+		 */
+		public T[] bind(T)() {
+			T[] ret;
+			foreach(row ; rows) {
+				T entity;
+				static if(is(T == class)) entity = new T();
+				apply(entity, row);
+				ret ~= entity;
+			}
+			return ret;
+		}
+
+		/**
+		 * Applies the result of one row to entity, passed by reference.
+		 * The entitty doesn't have to extend `Entity`.
+		 */
 		void apply(T)(ref T entity, Row[] row) {
 			static foreach(immutable member ; getEntityMembers!T) {
 				{
@@ -358,6 +698,60 @@ class Database {
 
 }
 
+/**
+ * Indicates whether an entity is valid.
+ * A valid entity extends `Entity`, is not abstract, has an
+ * empty constructor and no duplicated members.
+ */
+public bool isValidEntity(T)() {
+	static if(!is(T : Entity) || !__traits(compiles, new T())) {
+		return false;
+	} else {
+		import std.algorithm : sort, uniq;
+		import std.array : array;
+		string[] members;
+		static foreach(immutable member ; getEntityMembers!T) members ~= memberName!(T, member);
+		sort(members);
+		return uniq(members).array.length == members.length;
+	}
+}
+
+///
+unittest {
+
+	static struct Invalid0 {}
+
+	static class Invalid1 {}
+
+	static abstract class Invalid2 {}
+
+	static class Invalid3 : Entity {
+
+		override string tableName() { return "test"; }
+
+		this(int i) {}
+
+	}
+
+	static class Invalid4 : Entity {
+		
+		override string tableName() { return "test"; }
+
+		String test;
+
+		@Name("test")
+		String test0;
+
+	}
+
+	static assert(!isValidEntity!Invalid0);
+	static assert(!isValidEntity!Invalid1);
+	static assert(!isValidEntity!Invalid2);
+	static assert(!isValidEntity!Invalid3);
+	static assert(!isValidEntity!Invalid4);
+
+}
+
 private string memberName(T:Entity, string member)() {
 	static if(hasUDA!(__traits(getMember, T, member), Name)) {
 		return getUDAs!(__traits(getMember, T, member), Name)[0].name;
@@ -392,6 +786,8 @@ private Database.Type memberType(T)() {
 			return STRING;
 		} else static if(is(T == Binary) || is(T : ubyte[])) {
 			return BINARY;
+		} else {
+			static assert(0, "Member of type " ~ T.stringof ~ " is not valid");
 		}
 	}
 }
@@ -416,6 +812,17 @@ private string[] getEntityMembers(T:Entity)() {
 	return ret;
 }
 
+private string[] getEntityPrimaryKeys(T:Entity)() {
+	string[] ret;
+	static foreach(immutable member ; getEntityMembers!T) {
+		static if(hasUDA!(__traits(getMember, T, member), PrimaryKey)) ret ~= member;
+	}
+	return ret;
+}
+
+/**
+ * Generic database exception.
+ */
 class DatabaseException : Exception {
 
 	public this(string msg, string file=__FILE__, size_t line=__LINE__) {
@@ -424,6 +831,10 @@ class DatabaseException : Exception {
 
 }
 
+/**
+ * Exception thrown when an error occurs during the connection,
+ * like an unexpected or malformed packet.
+ */
 class DatabaseConnectionException : DatabaseException {
 
 	public this(string msg, string file=__FILE__, size_t line=__LINE__) {

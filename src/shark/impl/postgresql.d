@@ -66,12 +66,12 @@ class PostgresqlDatabase : SqlDatabase {
 				hashedPassword = password;
 				break;
 			case 5:
-				// hashed password
+				// hashed password (default)
 				void[] salt = buffer.readData(4);
 				hashedPassword = "md5" ~ toHexString!(LetterCase.lower)(md5Of(toHexString!(LetterCase.lower)(md5Of(password, user)), salt)).idup;
 				break;
 			default:
-				throw new DatabaseConnectionException("Unknown authentication method requested by the server");
+				throw new DatabaseConnectionException("Unknown authentication method requested by the server (" ~ method.to!string ~ ")");
 		}
 		if(passwordRequired) {
 			buffer.reset();
@@ -225,11 +225,6 @@ class PostgresqlDatabase : SqlDatabase {
 		buffer.write!(Endian.bigEndian, ushort)(1);
 		_stream.send(buffer);
 		buffer.reset();
-		/*_stream.id = "D";
-		buffer.write('S');
-		buffer.write0String(statement);
-		_stream.send(buffer);*/
-		buffer.reset();
 		_stream.id = "E";
 		buffer.write0String("");
 		buffer.write(0);
@@ -298,12 +293,10 @@ class PostgresqlDatabase : SqlDatabase {
 	// CREATE | ALTER
 
 	protected override TableInfo[string] getTableInfo(string table) {
-		//query("select column_name, data_type, is_nullable, character_maximum_length, column_default from INFORMATION_SCHEMA.COLUMNS where table_name=" ~ escapeString(table) ~ ";");
 		executeQuery(infoStatement, Prepared.prepare(table));
 		TableInfo[string] ret;
 		while(true) {
 			Buffer buffer = receive();
-			buffer.data.writeln;
 			if(_stream.id!char[0] == 'C') break;
 			enforcePacketSequence('D');
 			enforce!DatabaseConnectionException(buffer.read!(Endian.bigEndian, ushort)() == 5, "Wrong number of fields returned by the server");
@@ -315,7 +308,6 @@ class PostgresqlDatabase : SqlDatabase {
 			if(length != uint.max) field.length = buffer.read!(Endian.bigEndian, uint)();
 			immutable defaultValue = buffer.read!(Endian.bigEndian, uint)();
 			if(defaultValue != uint.max) field.defaultValue = buffer.read!string(defaultValue).idup;
-			field.writeln;
 			ret[field.name] = field;
 		}
 		enforceReadyForQuery();
@@ -441,6 +433,14 @@ class PostgresqlDatabase : SqlDatabase {
 		}
 	}
 
+	// UPDATE
+
+	protected override void updateImpl(UpdateInfo updateInfo, Clause.Where where) {
+		super.updateImpl(updateInfo, where);
+		receiveAndEnforcePacketSequence('C');
+		enforceReadyForQuery();
+	}
+
 	// DROP
 
 	public override void dropIfExists(string table) {
@@ -471,6 +471,10 @@ class PostgresqlDatabase : SqlDatabase {
 		Buffer buffer = receive();
 		enforcePacketSequence('Z');
 		enforce!DatabaseConnectionException(buffer.data.length == 1 && "ITE".canFind(buffer.read!char()), "Server is not ready for query");
+	}
+
+	protected override string randomFunction() {
+		return "random()";
 	}
 
 	protected override string escapeBinary(ubyte[] value) {

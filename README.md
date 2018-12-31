@@ -37,9 +37,17 @@ class Test : Entity {
 
 Database database = new PostgresqlDatabase("localhost");
 database.connect("test", "postgres", "root");
+
+database.dropIfExists("test");
 database.init!Test();
 
 Test test = new Test();
 test.a = "test";
 database.insert(test);
+assert(test.testId == 1); // auto-increment of primary key
+
+Test[] result = database.select!Test();
+assert(result.length == 1);
+assert(result[0].testId == 1);
+assert(result[0].a == "test");
 ```

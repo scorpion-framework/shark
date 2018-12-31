@@ -1,5 +1,6 @@
 ﻿module shark.sql;
 
+import std.conv : to;
 import std.exception : enforce;
 import std.string : join;
 
@@ -11,10 +12,30 @@ import xbuffer : Buffer;
 // debug
 import std.stdio;
 
+/**
+ * Generic SQL database.
+ */
 abstract class SqlDatabase : Database {
 
+	/**
+	 * Runs a query without receiving anything back.
+	 * Note that running just this method may break some implementations.
+	 * Example:
+	 * ---
+	 * database.query("drop table test;");
+	 * ---
+	 */
 	public abstract void query(string);
 
+	/**
+	 * Runs a select query and returns the result. This method
+	 * does not break the flow of the protocol like `query` does.
+	 * Example:
+	 * ---
+	 * auto result = database.querySelect("select * from test order by rand() limit 1");
+	 * result.bind!Test();
+	 * ---
+	 */
 	public abstract Result querySelect(string);
 
 	// CREATE | ALTER
@@ -92,7 +113,26 @@ abstract class SqlDatabase : Database {
 	// SELECT
 
 	protected override Result selectImpl(SelectInfo selectInfo, Select select) {
-		return querySelect("select " ~ (selectInfo.fields.length ? selectInfo.fields.join(",") : "*") ~ " from " ~ selectInfo.tableName ~ ";");
+		string where;
+		string[] order;
+		if(select.where.statement !is null) {
+			where = stringifyStatements(select.where.statement);
+		}
+		if(select.order.rand) {
+			order ~= randomFunction;
+		} else if(select.order.fields.length) {
+			foreach(field ; select.order.fields) {
+				order ~= field.name ~ " " ~ (field.asc ? "asc" : "desc");
+			}
+		}
+		string q = "select " ~ (selectInfo.fields.length ? selectInfo.fields.join(",") : "*") ~ " from " ~ selectInfo.tableName;
+		if(where.length) q ~= " where " ~ where;
+		if(order.length) q ~= " order by " ~ order.join(",");
+		if(select.limit.upper != 0) {
+			if(select.limit.lower == 0) q ~= " limit " ~ select.limit.upper.to!string;
+			else q ~= " limit " ~ select.limit.lower.to!string ~ "," ~ select.limit.upper.to!string;
+		}
+		return querySelect(q ~ ";");
 	}
 
 	// INSERT
@@ -109,6 +149,18 @@ abstract class SqlDatabase : Database {
 
 	protected abstract Result insertInto(string table, string[] names, string[] fields, string[] primaryKeys);
 
+	// UPDATE
+
+	protected override void updateImpl(UpdateInfo updateInfo, Clause.Where where) {
+		string[] sets;
+		foreach(field ; updateInfo.fields) {
+			sets ~= field.name ~ "=" ~ field.value;
+		}
+		string q = "update " ~ updateInfo.tableName ~ " set " ~ sets.join(",");
+		if(where.statement !is null) q ~= " where " ~ stringifyStatements(where.statement);
+		query(q ~ ";");
+	}
+
 	// DROP
 
 	public override void dropIfExists(string table) {
@@ -120,6 +172,39 @@ abstract class SqlDatabase : Database {
 	}
 
 	// UTILS
+
+	protected string stringifyStatements(Clause.Where.GenericStatement statement) {
+		auto complex = cast(Clause.Where.ComplexStatement)statement;
+		if(complex) {
+			return "(" ~ stringifyStatements(complex.leftStatement) ~ ") " ~ glueToString(complex.glue) ~ " (" ~ stringifyStatements(complex.rightStatement) ~ ")";
+		} else {
+			auto simple = cast(Clause.Where.Statement)statement;
+			assert(simple !is null);
+			if(simple.needsEscaping) return simple.field ~ " " ~ operatorToString(simple.operator) ~ " " ~ escape(simple.value);
+			else return simple.field ~ " " ~ operatorToString(simple.operator) ~ " " ~ simple.value;
+		}
+	}
+
+	protected string operatorToString(Clause.Where.Operator operator) {
+		final switch(operator) with(Clause.Where.Operator) {
+			case isNull: return "is";
+			case equals: return "=";
+			case notEquals: return "!=";
+			case greaterThan: return ">";
+			case greaterThanOrEquals: return ">=";
+			case lessThan: return "<";
+			case lessThanOrEquals: return "<=";
+		}
+	}
+
+	protected string glueToString(Clause.Where.Glue glue) {
+		final switch(glue) with(Clause.Where.Glue) {
+			case or: return "or";
+			case and: return "and";
+		}
+	}
+	
+	protected abstract @property string randomFunction();
 
 	protected override string escapeString(string value) {
 		import std.string : replace;

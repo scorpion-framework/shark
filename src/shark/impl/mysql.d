@@ -166,8 +166,7 @@ class MysqlDatabase : SqlDatabase {
 	}
 
 	protected override TableInfo[string] getTableInfo(string table) {
-		//query("describe " ~ table ~ ";");
-		query("show tables;");
+		query("describe " ~ table ~ ";");
 		return null;
 	}
 
@@ -203,6 +202,12 @@ class MysqlDatabase : SqlDatabase {
 
 	protected override Result insertInto(string table, string[] names, string[] fields, string[] primaryKeys) {
 		throw new Exception("Not implemented");
+	}
+
+	// UTILS
+
+	protected override string randomFunction() {
+		return "rand()";
 	}
 
 	protected override string escapeBinary(ubyte[] value) {

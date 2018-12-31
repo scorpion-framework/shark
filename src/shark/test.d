@@ -137,8 +137,20 @@ unittest {
 
 		assert(database.select!Test1().length == 3);
 
-		test1 = database.selectOne!(["string"], Test1)("test");
-		assert(test1.test == "test");
+		/*test1 = new Test1();
+		test1.test = "test";
+		test1 = database.selectOne!(["string"], Test1)(Database.Select(Database.Clause.Where.fromString("test = $1", "test")));
+		assert(test1.test == "test");*/
+
+		Test1[] test1s = database.select!Test1(Database.Select(Database.Clause.Order("a")));
+		assert(test1s[0].a == 33);
+		assert(test1s[1].a == 44);
+		assert(test1s[2].a == 55);
+
+		//test1s = database.select!Test1(Database.Select(Database.Clause.Where.fromString("a < 40")));
+		test1s = database.select!Test1(Database.Select(Database.Clause.Where(new Database.Clause.Where.Statement("a", "<", 40))));
+		assert(test1s.length == 1);
+		assert(test1s[0].a == 33);
 
 		database.drop("test");
 		database.init!Test2();
@@ -147,7 +159,7 @@ unittest {
 		test2.a = true;
 		//test2.b = 12;
 		test2.c = 13;
-		test2.d = 14;
+		test2.d = -14;
 		test2.e = null;
 		test2.f = .55f;
 		test2.g = 7.34823e+10;
@@ -164,7 +176,7 @@ unittest {
 		assert(test2.a == true);
 		//assert(test2.b == 12);
 		assert(test2.c == 13);
-		assert(test2.d == 14);
+		assert(test2.d == -14);
 		assert(test2.e.isNull);
 		assert(test2.f == .55f);
 		assert(test2.g == 7.34823e+10);
@@ -182,6 +194,14 @@ unittest {
 		test3.id2 = "test";
 		test3.value = int.max;
 		database.insert(test3);
+
+		test3.value = 12;
+		database.update!"value"(test3);
+
+		test3 = database.selectId!Test3(test3);
+		assert(test3.id1 == 1);
+		assert(test3.id2 == "test");
+		assert(test3.value == 12);
 
 		database.drop("test");
 		database.init!Test4();
