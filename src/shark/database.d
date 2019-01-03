@@ -2,7 +2,8 @@ module shark.database;
 
 import std.conv : to;
 static import std.datetime;
-import std.string : join;
+import std.exception : enforce;
+import std.string : join, split, strip, startsWith;
 import std.traits : hasUDA, getUDAs;
 
 import shark.entity;
@@ -441,6 +442,8 @@ class Database {
 		 * Where clause.
 		 */
 		static struct Where {
+			
+			GenericStatement statement;
 
 			static interface GenericStatement {}
 
@@ -454,15 +457,15 @@ class Database {
 
 				bool needsEscaping;
 
-				this(T)(string field, Operator operator, T value) {
+				this(T)(string field, Operator operator, T value, bool variable=false) {
 					this.field = field;
 					this.operator = operator;
 					this.value = value.to!string;
-					static if(is(T : string)) needsEscaping = true;
+					static if(is(T : string)) needsEscaping = !variable;
 				}
 
-				this(T)(string field, string operator, T value) {
-					this(field, fromString(operator), value);
+				this(T)(string field, string operator, T value, bool variable=false) {
+					this(field, fromString(operator), value, variable);
 				}
 
 				private Operator fromString(string operator) {
@@ -513,31 +516,133 @@ class Database {
 				or
 
 			}
-			
-			GenericStatement statement;
 
-			/+/**
-			 * Constructs a where clause from a string.
+			private static struct PreparedWhere(string mixme) {
+
+				Where build(E...)(E args) {
+					return Where(mixin(mixme));
+				}
+
+			}
+
+			/**
+			 * Constructs a prepared where clause from a string that can be
+			 * built by calling `build`.
 			 * Note that this function does not parse a SQL where clause
 			 * but a proprietary one.
 			 */
-			static Where fromString(E...)(string str, E args) {
-				//import std.regex : ctRegex;
-				//enum regex = ctRegex!`\(([^\(\)]*)\)`;
-				Statement[] ret;
-
-				return Where(ret);
+			static auto prepare(T:Entity, string str)() {
+				enum map = {
+					string[string] ret;
+					static foreach(immutable member ; getEntityMembers!T) {
+						ret[member] = memberName!(T, member);
+					}
+					return ret;
+				}();
+				return prepareImpl!(map, str)();
 			}
 
+			/// ditto
+			static auto prepare(string str)() {
+				return prepareImpl!((string[string]).init, str)();
+			}
+
+			private static auto prepareImpl(string[string] map, string str)() {
+				pragma(msg, prepareStatements(map, str));
+				return PreparedWhere!(prepareStatements(map, str))();
+			}
+
+			private static string prepareStatements(string[string] map, string str) {
+				//import std.regex : ctRegex;
+				//enum regex = ctRegex!`\(([^\(\)]*)\)`;
+				string ret;
+				ret = prepareStatementsNoP(map, str);
+				return ret;
+			}
+
+			// prepares a statement that has no parenthesis
+			private static string prepareStatementsNoP(string[string] map, string str) {
+				string[] statements;
+				string[] glues; // length must be statements.length-1
+				while(true) {
+					statements ~= prepareStatement(map, str);
+					skipSpaces(str);
+					if(str.length) {
+						if(str.startsWith("or")) glues ~= consume(str, 2);
+						else if(str.startsWith("and")) glues ~= consume(str, 3);
+						else throw new Exception("Expected 'and' or 'or'");
+					} else {
+						break;
+					}
+				}
+				assert(statements.length == glues.length + 1);
+				if(statements.length == 1) return statements[0];
+				string ret;
+				foreach(i, statement; statements[0..$-1]) {
+					ret ~= ",new ComplexStatement(" ~ statement;
+					ret ~= ",Glue." ~ glues[i];
+				}
+				ret ~= "," ~ statements[$-1];
+				foreach(i ; 0..statements.length-1) ret ~= ")";
+				return ret[1..$];
+			}
+
+			// prepares a single statement consuming the input
+			private static string prepareStatement(string[string] map, ref string str) {
+				enum opMap = ["=": "equals", "==": "equals", "!=": "notEquals", ">": "greaterThan", ">=": "greaterThanOrEquals", "<": "lessThan", "<=": "lessThanOrEquals"];
+				string readVariable(ref string str, bool acceptArgs=false) {
+					string var;
+					char last;
+					if(acceptArgs && str.length && str[0] == '$') {
+						str = str[1..$];
+						while(str.length && (str[0] >= '0' && str[0] <= '9')) var ~= consume(str, 1);
+						return "args[" ~ var ~ "]";
+					} else {
+						while(str.length && (str[0] >= 'a' && str[0] <= 'z' || str[0] >= 'A' && str[0] <= 'Z' || str[0] >= '0' && str[0] <= '9' || str[0] == '_')) var ~= consume(str, 1);
+						auto ptr = var in map;
+						return '"' ~ (ptr ? *ptr : var) ~ '"';
+					}
+				}
+				string readOperator() {
+					string a = consume(str, 2);
+					auto ptr = a in opMap;
+					if(ptr) return *ptr;
+					str = a[1] ~ str;
+					a = a[0..1];
+					ptr = a in opMap;
+					enforce!Exception(ptr !is null, a ~ " is not a valid operator");
+					return *ptr;
+				}
+				skipSpaces(str);
+				immutable left = readVariable(str);
+				skipSpaces(str);
+				immutable op = readOperator();
+				skipSpaces(str);
+				immutable right = readVariable(str, true);
+				return "new Statement(" ~ left ~ ",Operator." ~ op ~ "," ~ right ~ ")";
+			}
+
+			private static string consume(ref string str, size_t length) {
+				enforce!Exception(length <= str.length, "Unexpected end of input");
+				scope(exit) str = str[length..$];
+				return str[0..length];
+			}
+
+			private static void skipSpaces(ref string str) {
+				while(str.length && str[0] == ' ') str = str[1..$];
+			}
+			
 			///
 			unittest {
 
-				Where.fromString("a > 50");
-				Where.fromString("a == b");
-				Where.fromString("(a > 50 or b < 50) and c == 'test'");
-				Where.fromString("a > b and (c is null or (c >= d or e != f))");
+				Where.prepare!"a > 50".build();
+				Where.prepare!"a == 1 and b == 2 and c == 3".build();
+				Where.prepare!"a == b and b != c or c > d".build();
+				Where.prepare!"a == $0".build(1);
+				//Where.prepare!"(a > 50 or b < 50) and c == 'test'".build();
+				//Where.prepare!"a > b and (c is null or (c >= d or e != f))".build();
 
-			}+/
+			}
 			
 		}
 
@@ -568,8 +673,9 @@ class Database {
 			}
 
 			static struct Field {
-
+				
 				enum asc = true;
+				
 				enum desc = false;
 
 				string name;

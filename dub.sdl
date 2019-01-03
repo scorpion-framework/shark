@@ -1,4 +1,5 @@
 name "shark"
 description "Native connector for various databases"
+website "scorpionframework.org/shark"
 license "MIT"
 dependency "xbuffer" version="~>1.0.0"

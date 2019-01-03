@@ -127,7 +127,7 @@ abstract class SqlDatabase : Database {
 			order ~= randomFunction;
 		} else if(select.order.fields.length) {
 			foreach(field ; select.order.fields) {
-				order ~= field.name ~ " " ~ (field.asc ? "asc" : "desc");
+				order ~= field.name ~ " " ~ (field._asc ? "asc" : "desc");
 			}
 		}
 		string q = "select " ~ (selectInfo.fields.length ? selectInfo.fields.join(",") : "*") ~ " from " ~ selectInfo.tableName;
