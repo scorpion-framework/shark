@@ -166,7 +166,7 @@ class MysqlDatabase : SqlDatabase {
 	}
 
 	protected override TableInfo[string] getTableInfo(string table) {
-		query("describe " ~ table ~ ";");
+		//query("describe " ~ table ~ ";");
 		return null;
 	}
 

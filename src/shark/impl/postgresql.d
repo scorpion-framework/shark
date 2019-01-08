@@ -327,7 +327,7 @@ class PostgresqlDatabase : SqlDatabase {
 	private uint fromStringToType(string str) {
 		switch(str) with(Type) {
 			case "boolean": return BOOL;
-			case "smaillint": return SHORT;
+			case "smallint": return SHORT;
 			case "integer": return INT;
 			case "bigint": return LONG;
 			case "real": return FLOAT;
@@ -337,8 +337,8 @@ class PostgresqlDatabase : SqlDatabase {
 			case "bytea": return BINARY | BLOB;
 			case "text": return CLOB;
 			case "date": return DATE;
-			case "timestamp": return DATETIME;
-			case "time": return TIME;
+			case "timestamp": case "timestamp without time zone": return DATETIME;
+			case "time": case "time without time zone": return TIME;
 			default: throw new DatabaseException("Unknown type '" ~ str ~ "'");
 		}
 	}
