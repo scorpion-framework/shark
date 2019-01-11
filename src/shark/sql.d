@@ -6,6 +6,7 @@ import std.exception : enforce;
 import std.experimental.logger : warning;
 import std.string : join;
 
+import shark.clause;
 import shark.database;
 import shark.entity;
 

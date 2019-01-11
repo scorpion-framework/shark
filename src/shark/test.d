@@ -4,6 +4,7 @@ unittest {
 
 	import std.exception : assertThrown;
 
+	import shark.clause;
 	import shark.database;
 	import shark.entity;
 	import shark.sql;
@@ -143,17 +144,17 @@ unittest {
 
 		assert(database.select!Test1().length == 3);
 
-		/*test1 = new Test1();
+		test1 = new Test1();
 		test1.test = "test";
-		test1 = database.selectOne!(["string"], Test1)(Database.Select(Database.Clause.Where.fromString("test = $0", "test")));
-		assert(test1.test == "test");*/
+		test1 = database.selectOne!(["string"], Test1)(Database.Select(Clause.Where(var("string").equals("test"))));
+		assert(test1.test == "test");
 
-		Test1[] test1s = database.select!Test1(Database.Select(Database.Clause.Order("a")));
+		Test1[] test1s = database.select!Test1(Database.Select(Clause.Order("a")));
 		assert(test1s[0].a == 33);
 		assert(test1s[1].a == 44);
 		assert(test1s[2].a == 55);
 
-		test1s = database.select!Test1(Database.Select(Database.Clause.Where.prepare!"a < 40".build()));
+		test1s = database.select!Test1(Database.Select(Clause.Where(var("a").lessThan(40) & var("b").notEquals(0))));
 		assert(test1s.length == 1);
 		assert(test1s[0].a == 33);
 

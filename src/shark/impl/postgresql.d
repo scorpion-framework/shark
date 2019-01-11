@@ -11,6 +11,7 @@ import std.socket;
 import std.string : join, replace;
 import std.system : Endian;
 
+import shark.clause;
 import shark.database : DatabaseException, DatabaseConnectionException, ErrorCodeDatabaseException, ErrorCodesDatabaseException;
 import shark.sql : SqlDatabase;
 import shark.util : Stream, read0String, write0String, fromHexString;
